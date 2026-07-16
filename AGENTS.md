@@ -35,7 +35,12 @@ Read this file and `README.md` before changing product code.
    control prominence, window kind, panel role, and spacing density are semantic
    values translated by each platform adapter.
 2. Prefer native controls and containers. Canvas drawing is reserved for a
-   component whose content is inherently graphical.
+   component whose content is inherently graphical — terminal cell grids,
+   audio meters, dashboard widget faces. The `Canvas` element is not an
+   escape hatch for imitating a control: a canvas that draws a fake button,
+   list, input, or any other native control violates this contract. Adapters
+   that do not implement the canvas reject it with a typed diagnostic and
+   never substitute another control for it.
 3. Platform-owned geometry is queried from the platform or left to native
    layout. Do not duplicate traffic-light, title-bar, header-bar, font, corner,
    or control metrics in the common crate.

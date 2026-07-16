@@ -4,7 +4,7 @@
 //! its retained mounted tree into native WinUI controls. Windows App SDK
 //! runtime staging belongs to the executable package that calls [`run`].
 
-use rinka_core::{ApplicationSpec, PanelBehavior, WindowKind};
+use rinka_core::{ApplicationSpec, Element, ElementKind, PanelBehavior, WindowKind};
 use std::error::Error;
 use std::fmt;
 
@@ -34,6 +34,13 @@ pub enum WinUiDiagnostic {
         /// Human-readable unsupported field.
         field: &'static str,
     },
+    /// A declared element capability that the WinUI host does not implement.
+    UnsupportedElementCapability {
+        /// Element that requested the capability.
+        kind: ElementKind,
+        /// Stable capability identifier.
+        capability: &'static str,
+    },
     /// Common content was structurally invalid at initial projection time.
     Projection(String),
     /// The Windows App SDK host returned a native error.
@@ -57,6 +64,10 @@ impl fmt::Display for WinUiDiagnostic {
             Self::UnsupportedPanelBehavior { window_id, field } => write!(
                 formatter,
                 "panel '{window_id}' requests unsupported behavior '{field}'"
+            ),
+            Self::UnsupportedElementCapability { kind, capability } => write!(
+                formatter,
+                "WinUI host does not implement {capability} for {kind:?}"
             ),
             Self::Projection(message) => write!(formatter, "common projection failed: {message}"),
             Self::Native(message) => write!(formatter, "WinUI 3 host failed: {message}"),
@@ -108,12 +119,31 @@ fn validate_application(application: &ApplicationSpec) -> Result<(), WinUiDiagno
                 });
             }
         }
+        validate_element(&window.content.snapshot())?;
     }
     match main_windows {
         0 => Err(WinUiDiagnostic::MissingMainWindow),
         1 => Ok(()),
         _ => Err(WinUiDiagnostic::MultipleMainWindows),
     }
+}
+
+/// Validates one element subtree against WinUI element capabilities.
+///
+/// The owned-drawing canvas is not implemented by this host yet; it is
+/// rejected with a typed diagnostic and never replaced with a visually
+/// unrelated control.
+fn validate_element(element: &Element) -> Result<(), WinUiDiagnostic> {
+    if element.kind() == ElementKind::Canvas {
+        return Err(WinUiDiagnostic::UnsupportedElementCapability {
+            kind: ElementKind::Canvas,
+            capability: "owned-drawing canvas surface",
+        });
+    }
+    for child in element.children() {
+        validate_element(child)?;
+    }
+    Ok(())
 }
 
 fn validate_panel(window_id: &str, behavior: PanelBehavior) -> Result<(), WinUiDiagnostic> {
@@ -218,6 +248,24 @@ mod tests {
             Err(WinUiDiagnostic::UnsupportedPanelBehavior {
                 window_id: "activity".to_owned(),
                 field: "hides_when_inactive",
+            })
+        );
+    }
+
+    #[test]
+    fn canvas_content_is_a_typed_unsupported_capability() {
+        let mut with_canvas = window("main", WindowKind::Main);
+        with_canvas.content = WindowContent::from(rinka_core::column([rinka_core::canvas(
+            rinka_core::CanvasSize::new(32.0, 32.0),
+            rinka_core::DrawScene::new(),
+            "Level meter",
+        )]));
+        let value = application(vec![with_canvas]);
+        assert_eq!(
+            validate_application(&value),
+            Err(WinUiDiagnostic::UnsupportedElementCapability {
+                kind: rinka_core::ElementKind::Canvas,
+                capability: "owned-drawing canvas surface",
             })
         );
     }

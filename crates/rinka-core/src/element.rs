@@ -274,6 +274,17 @@ impl Element {
         self
     }
 
+    /// Handles element-local pointer events on an owned-drawing canvas.
+    pub fn on_pointer(mut self, handler: impl Fn(crate::PointerEvent) + 'static) -> Self {
+        match &self.props {
+            Props::Canvas { .. } => {
+                self.handlers.pointer = Some(Rc::new(handler) as crate::PointerHandler);
+            }
+            _ => panic!("on_pointer is valid only for a canvas"),
+        }
+        self
+    }
+
     pub(crate) fn take_children(&mut self) -> Vec<Self> {
         std::mem::take(&mut self.children)
     }
@@ -452,6 +463,29 @@ pub fn list_row(
     });
     element.handlers.activate = Some(Rc::new(handler) as ActivateHandler);
     element
+}
+
+/// Creates an owned-drawing canvas surface.
+///
+/// The canvas is reserved for content that is inherently graphical — a
+/// terminal cell grid, an audio meter, a dashboard widget face. It is not an
+/// escape hatch for imitating native controls: a canvas that draws a fake
+/// button, list, input, or any other control violates the design contract.
+///
+/// `size` is the intrinsic content extent in logical points and `scene` is
+/// the recorded display list the application rebuilds each render; the
+/// reconciler compares scenes by value and patches the native surface only
+/// when the drawing actually changed.
+pub fn canvas(
+    size: crate::CanvasSize,
+    scene: crate::DrawScene,
+    accessibility_label: impl Into<String>,
+) -> Element {
+    Element::leaf(Props::Canvas {
+        size,
+        scene,
+        accessibility_label: accessibility_label.into(),
+    })
 }
 
 /// Creates a native empty, busy, error, or informational status page.

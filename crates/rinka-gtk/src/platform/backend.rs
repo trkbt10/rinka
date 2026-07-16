@@ -106,6 +106,15 @@ fn validate_element(element: &Element) -> Result<(), GtkError> {
             require_text("status title", title)?;
             require_text("status message", message)?;
         }
+        Props::Canvas { .. } => {
+            // Typed unsupported-capability rejection: the GTK adapter does
+            // not yet realize the owned-drawing canvas (GtkDrawingArea +
+            // cairo is the intended backing) and never substitutes another
+            // control for it.
+            return Err(GtkError(
+                "GTK adapter does not implement the owned-drawing canvas element yet".to_owned(),
+            ));
+        }
         Props::Label { .. }
         | Props::Separator { .. }
         | Props::Spacer { .. }
@@ -412,6 +421,9 @@ fn create_element(
                 Vec::new(),
             ))
         }
+        Props::Canvas { .. } => Err(GtkError(
+            "GTK adapter does not implement the owned-drawing canvas element yet".to_owned(),
+        )),
     }
 }
 
@@ -819,6 +831,11 @@ fn apply_patch(
             page.set_title(title);
             page.set_description(Some(message));
             page.set_icon_name(Some(status_icon(*tone)));
+        }
+        Props::Canvas { .. } => {
+            return Err(GtkError(
+                "GTK adapter does not implement the owned-drawing canvas element yet".to_owned(),
+            ));
         }
     }
     Ok(())

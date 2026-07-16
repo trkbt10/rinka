@@ -188,9 +188,9 @@ impl ApplicationDelegate {
             .unwrap_or_else(|_| panic!("RINKA_APPKIT_SCENE_PROBE must be valid UTF-8"));
         if !matches!(
             expected_scene.as_str(),
-            "ready" | "empty" | "busy" | "error"
+            "ready" | "empty" | "busy" | "error" | "canvas"
         ) {
-            panic!("RINKA_APPKIT_SCENE_PROBE expects ready, empty, busy, or error");
+            panic!("RINKA_APPKIT_SCENE_PROBE expects ready, empty, busy, error, or canvas");
         }
 
         let observed_scene = {
@@ -436,15 +436,19 @@ impl ApplicationDelegate {
     }
 
     fn finish_scene_probe(&self) {
-        let probe = self.ivars().scene_probe.borrow();
-        let Some(probe) = probe.as_ref() else {
-            return;
-        };
-        eprintln!(
-            "Rinka scene probe scene={} result={}",
-            probe.expected_scene,
-            if probe.passed { "PASS" } else { "FAIL" }
-        );
+        {
+            let probe = self.ivars().scene_probe.borrow();
+            let Some(probe) = probe.as_ref() else {
+                return;
+            };
+            eprintln!(
+                "Rinka scene probe scene={} result={}",
+                probe.expected_scene,
+                if probe.passed { "PASS" } else { "FAIL" }
+            );
+        }
+        self.capture_windows_to_directory("");
+        self.run_pointer_probe();
         if std::env::var_os("RINKA_APPKIT_SCENE_PROBE_HOLD").is_none() {
             // SAFETY: Diagnostic completion terminates only the current test app.
             unsafe {
@@ -454,6 +458,141 @@ impl ApplicationDelegate {
                     terminate: std::ptr::null::<AnyObject>()
                 ];
             }
+        }
+    }
+
+    /// Writes each retained window's content view into
+    /// `RINKA_APPKIT_WINDOW_CAPTURE_DIR` as `<prefix>window-<index>.png`.
+    ///
+    /// The capture renders the live view hierarchy into a backing-scale
+    /// bitmap through AppKit itself, so it needs no screen-recording
+    /// permission and records the real drawing output.
+    fn capture_windows_to_directory(&self, prefix: &str) {
+        let Some(directory) = std::env::var_os("RINKA_APPKIT_WINDOW_CAPTURE_DIR") else {
+            return;
+        };
+        let directory = std::path::PathBuf::from(directory);
+        for (index, window) in self.ivars().windows.borrow().iter().enumerate() {
+            let path = directory.join(format!("{prefix}window-{index}.png"));
+            // SAFETY: The retained NSWindow's content view renders itself on
+            // AppKit's main thread inside this call.
+            let written = unsafe { write_window_content_png(window.as_object(), &path) };
+            eprintln!(
+                "Rinka window capture index={index} prefix={prefix} written={written} path={}",
+                path.display()
+            );
+        }
+        self.capture_element_to_directory(&directory, prefix);
+    }
+
+    /// Writes the mounted element named by `RINKA_APPKIT_ELEMENT_CAPTURE`
+    /// into the capture directory as `<prefix>element-<key>.png`.
+    fn capture_element_to_directory(&self, directory: &std::path::Path, prefix: &str) {
+        let Some(target_key) = std::env::var_os("RINKA_APPKIT_ELEMENT_CAPTURE") else {
+            return;
+        };
+        let target_key = target_key
+            .into_string()
+            .unwrap_or_else(|_| panic!("RINKA_APPKIT_ELEMENT_CAPTURE must be valid UTF-8"));
+        let handle = {
+            let renderers = self.ivars().renderers.borrow();
+            renderers.first().and_then(|runtime| {
+                runtime.with_renderer(|renderer| {
+                    renderer
+                        .mounted()
+                        .and_then(|mounted| mounted_handle_for_key(mounted, &target_key))
+                        .cloned()
+                })
+            })
+        };
+        let Some(handle) = handle else {
+            eprintln!("Rinka element capture key={target_key} written=false reason=not-mounted");
+            return;
+        };
+        let path = directory.join(format!("{prefix}element-{target_key}.png"));
+        // SAFETY: The mounted element's view renders itself on AppKit's main
+        // thread inside this call.
+        let written = unsafe { write_view_png(handle.view(), &path) };
+        eprintln!(
+            "Rinka element capture key={target_key} prefix={prefix} written={written} path={}",
+            path.display()
+        );
+    }
+
+    /// Sends one synthetic primary-button click through the AppKit event
+    /// pipeline at the center of the mounted element named by
+    /// `RINKA_APPKIT_POINTER_PROBE`, then captures the windows again with
+    /// the `after-pointer-` prefix.
+    ///
+    /// The events travel through `NSWindow sendEvent:` — real hit testing
+    /// and responder dispatch — without touching the user's desktop, screen
+    /// pointer, or any process other than this one.
+    fn run_pointer_probe(&self) {
+        let Some(target_key) = std::env::var_os("RINKA_APPKIT_POINTER_PROBE") else {
+            return;
+        };
+        let target_key = target_key
+            .into_string()
+            .unwrap_or_else(|_| panic!("RINKA_APPKIT_POINTER_PROBE must be valid UTF-8"));
+        let handle = {
+            let renderers = self.ivars().renderers.borrow();
+            renderers.first().and_then(|runtime| {
+                runtime.with_renderer(|renderer| {
+                    renderer
+                        .mounted()
+                        .and_then(|mounted| mounted_handle_for_key(mounted, &target_key))
+                        .cloned()
+                })
+            })
+        };
+        let Some(handle) = handle else {
+            eprintln!("Rinka pointer probe key={target_key} result=FAIL reason=element-not-mounted");
+            return;
+        };
+        // SAFETY: The mounted view, its window, and NSEvent construction are
+        // used on AppKit's main thread; sendEvent: performs ordinary event
+        // dispatch confined to this application's window.
+        let delivered = unsafe {
+            let view = handle.view();
+            let window: *mut AnyObject = msg_send![view, window];
+            if window.is_null() {
+                false
+            } else {
+                let bounds: Rect = msg_send![view, bounds];
+                let center = Point {
+                    x: bounds.origin.x + bounds.size.width / 2.0,
+                    y: bounds.origin.y + bounds.size.height / 2.0,
+                };
+                let in_window: Point = msg_send![
+                    view,
+                    convertPoint: center,
+                    toView: std::ptr::null::<AnyObject>()
+                ];
+                let window_number: isize = msg_send![window, windowNumber];
+                // NSEventTypeLeftMouseDown = 1, NSEventTypeLeftMouseUp = 2.
+                for event_type in [1_usize, 2_usize] {
+                    let event: *mut AnyObject = msg_send![objc2::class!(NSEvent),
+                        mouseEventWithType: event_type,
+                        location: in_window,
+                        modifierFlags: 0_usize,
+                        timestamp: 0.0_f64,
+                        windowNumber: window_number,
+                        context: std::ptr::null::<AnyObject>(),
+                        eventNumber: 0_isize,
+                        clickCount: 1_isize,
+                        pressure: 1.0_f32
+                    ];
+                    let _: () = msg_send![window, sendEvent: event];
+                }
+                true
+            }
+        };
+        eprintln!(
+            "Rinka pointer probe key={target_key} result={}",
+            if delivered { "PASS" } else { "FAIL" }
+        );
+        if delivered {
+            self.capture_windows_to_directory("after-pointer-");
         }
     }
 

@@ -1,9 +1,10 @@
 use crate::{WinUiDiagnostic, resolve_workspace_visibility};
 use rinka_core::{
-    Align, ApplicationSpec, Axis, ButtonRole, CollectionPattern, ControlSize, EventBindings,
-    InputKind, Justify, ListRowRole, MountedNode, ProjectedHandle, Props, SortDirection, Spacing,
-    StatusTone, Symbol as CommonSymbol, TableColumn, TableSort, TextRole, ToolbarAction,
-    ToolbarItemKind, ToolbarMenuEntry, UiPattern, WindowKind, WindowProjection, WindowSpec,
+    Align, ApplicationSpec, Axis, ButtonRole, CollectionPattern, ControlSize, ElementKind,
+    EventBindings, InputKind, Justify, ListRowRole, MountedNode, ProjectedHandle, Props,
+    SortDirection, Spacing, StatusTone, Symbol as CommonSymbol, TableColumn, TableSort, TextRole,
+    ToolbarAction, ToolbarItemKind, ToolbarMenuEntry, UiPattern, WindowKind, WindowProjection,
+    WindowSpec,
 };
 use std::cell::RefCell;
 use std::ffi::c_void;

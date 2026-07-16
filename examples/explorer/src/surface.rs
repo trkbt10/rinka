@@ -199,6 +199,19 @@ fn write_props(output: &mut String, props: &Props) {
             json(&format!("{tone:?}"))
         )
         .unwrap(),
+        Props::Canvas {
+            size,
+            scene,
+            accessibility_label,
+        } => write!(
+            output,
+            "{{\"width\":{},\"height\":{},\"commands\":{},\"accessibilityLabel\":{}}}",
+            size.width,
+            size.height,
+            scene.commands().len(),
+            json(accessibility_label)
+        )
+        .unwrap(),
         other => write!(output, "{}", json(&format!("{other:?}"))).unwrap(),
     }
 }
@@ -235,10 +248,11 @@ mod tests {
     #[test]
     fn extraction_contains_every_scene_and_accessible_label() {
         let output = extract_all_scenes();
-        for scene in ["ready", "empty", "busy", "error"] {
+        for scene in ["ready", "empty", "busy", "error", "canvas"] {
             assert!(output.contains(&format!("\"id\":\"{scene}\"")));
         }
         assert!(output.contains("accessibilityLabel"));
         assert!(output.contains("Connection Activity"));
+        assert!(output.contains("Canvas test pattern"));
     }
 }

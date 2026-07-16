@@ -1,6 +1,6 @@
 //! Deterministic retained-tree adapter used by tests and surface extraction.
 
-use rinka_core::{Element, EventBindings, NativeBackend, PropertyPatch, Props};
+use rinka_core::{Element, EventBindings, MonospaceMetrics, NativeBackend, PropertyPatch, Props};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
@@ -174,6 +174,22 @@ impl NativeBackend for HeadlessBackend {
 
     fn validate(&self, _element: &Element) -> Result<(), Self::Error> {
         Ok(())
+    }
+
+    /// Returns the synthetic headless font model.
+    ///
+    /// The values are deterministic stand-ins for tests, not platform truth:
+    /// the row advances one and a half times the font size and every glyph
+    /// advances six tenths of it, which preserves the monospace invariants a
+    /// terminal grid depends on (constant row height, constant glyph width).
+    fn monospace_metrics(&self, font_size: f64) -> Option<MonospaceMetrics> {
+        if !font_size.is_finite() || font_size <= 0.0 {
+            return None;
+        }
+        Some(MonospaceMetrics {
+            row_height: font_size * 1.5,
+            glyph_width: font_size * 0.6,
+        })
     }
 
     fn create(

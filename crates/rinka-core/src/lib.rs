@@ -4,6 +4,7 @@
 //! controls and never imports an operating-system toolkit.
 
 mod backend;
+mod canvas;
 mod element;
 mod event;
 mod pattern;
@@ -16,11 +17,17 @@ mod validation;
 mod window;
 
 pub use backend::{NativeBackend, PropertyPatch};
-pub use element::{
-    Element, Key, button, column, input, label, list, list_row, mount_pattern, progress, row,
-    scroll, separator, spacer, status, toggle,
+pub use canvas::{
+    CanvasColor, CanvasPoint, CanvasRect, CanvasSize, CanvasVector, DrawCommand, DrawScene,
+    LineWidth, MonospaceMetrics, PointerButton, PointerEvent, PointerModifiers, PointerPhase,
 };
-pub use event::{ActivateHandler, EventBindings, InputHandler, SortHandler, ToggleHandler};
+pub use element::{
+    Element, Key, button, canvas, column, input, label, list, list_row, mount_pattern, progress,
+    row, scroll, separator, spacer, status, toggle,
+};
+pub use event::{
+    ActivateHandler, EventBindings, InputHandler, PointerHandler, SortHandler, ToggleHandler,
+};
 pub use pattern::{PatternRegion, UiPattern};
 pub use projection::{ProjectedHandle, WindowProjection};
 pub use reconcile::{MountedNode, RenderError, RenderStats, Renderer};

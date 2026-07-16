@@ -410,9 +410,64 @@ fn mounted_scene(node: &MountedNode<AppKitHandle>) -> Option<&'static str> {
         ("directory-empty", "empty"),
         ("directory-busy", "busy"),
         ("directory-error", "error"),
+        ("canvas-pane", "canvas"),
     ]
     .into_iter()
     .find_map(|(key, scene)| mounted_handle_for_key(node, key).map(|_| scene))
+}
+
+/// Renders a window's content view into a PNG at its backing scale.
+///
+/// # Safety
+///
+/// The caller supplies a live NSWindow retained by the application delegate
+/// and invokes this helper on AppKit's main thread.
+unsafe fn write_window_content_png(window: &AnyObject, path: &std::path::Path) -> bool {
+    // SAFETY: The content view is a live NSView owned by the retained window.
+    unsafe {
+        let content: *mut AnyObject = msg_send![window, contentView];
+        let Some(content) = NonNull::new(content) else {
+            return false;
+        };
+        write_view_png(content.as_ref(), path)
+    }
+}
+
+/// Renders one view hierarchy into a PNG at its backing scale.
+///
+/// # Safety
+///
+/// The caller supplies a live NSView attached to a window and invokes this
+/// helper on AppKit's main thread.
+unsafe fn write_view_png(view: &AnyObject, path: &std::path::Path) -> bool {
+    // SAFETY: The view caches its own display into a bitmap rep that AppKit
+    // sizes for the window's backing scale; every receiver below is a live
+    // object returned by the previous call on the main thread.
+    unsafe {
+        let bounds: Rect = msg_send![view, bounds];
+        let representation: *mut AnyObject =
+            msg_send![view, bitmapImageRepForCachingDisplayInRect: bounds];
+        if representation.is_null() {
+            return false;
+        }
+        let _: () = msg_send![
+            view,
+            cacheDisplayInRect: bounds,
+            toBitmapImageRep: representation
+        ];
+        let properties: *mut AnyObject = msg_send![objc2::class!(NSDictionary), dictionary];
+        // NSBitmapImageFileTypePNG = 4.
+        let data: *mut AnyObject = msg_send![
+            representation,
+            representationUsingType: 4_usize,
+            properties: properties
+        ];
+        if data.is_null() {
+            return false;
+        }
+        let path = ns_string(&path.to_string_lossy());
+        msg_send![data, writeToFile: path.as_object(), atomically: true]
+    }
 }
 
 unsafe fn window_geometry_is_valid(window: &AnyObject) -> bool {
@@ -439,8 +494,19 @@ unsafe fn view_geometry_is_valid(view: &AnyObject) -> bool {
         || (ambiguous && !translates)
     {
         let class_name: *mut AnyObject = unsafe { msg_send![view, className] };
+        // SAFETY: The optional text query guards its selector, and both
+        // string objects are read on the main thread before conversion.
+        let text = unsafe {
+            let responds: bool = msg_send![view, respondsToSelector: sel!(stringValue)];
+            if responds {
+                let value: *mut AnyObject = msg_send![view, stringValue];
+                rust_string(value)
+            } else {
+                String::new()
+            }
+        };
         eprintln!(
-            "Rinka geometry invalid view_class={} frame={frame:?} ambiguous={ambiguous} translates={translates}",
+            "Rinka geometry invalid view_class={} text={text:?} frame={frame:?} ambiguous={ambiguous} translates={translates}",
             rust_string(class_name)
         );
         return false;

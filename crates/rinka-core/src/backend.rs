@@ -38,6 +38,16 @@ pub trait NativeBackend {
     /// native mutation.
     fn validate(&self, element: &Element) -> Result<(), Self::Error>;
 
+    /// Measures the native monospace font used by canvas glyph runs.
+    ///
+    /// `font_size` is in logical points. Returns [`None`] when the adapter
+    /// does not implement canvas text measurement; the platform never
+    /// substitutes fabricated metrics.
+    fn monospace_metrics(&self, font_size: f64) -> Option<crate::MonospaceMetrics> {
+        let _ = font_size;
+        None
+    }
+
     /// Creates a native object without declarative children.
     fn create(
         &mut self,

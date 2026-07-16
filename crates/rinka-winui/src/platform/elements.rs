@@ -1,3 +1,15 @@
+/// Returns the typed diagnostic for the first mounted element this host
+/// cannot realize, searching depth first.
+fn first_unsupported_element(node: &MountedNode<ProjectedHandle>) -> Option<WinUiDiagnostic> {
+    if node.element().kind() == ElementKind::Canvas {
+        return Some(WinUiDiagnostic::UnsupportedElementCapability {
+            kind: ElementKind::Canvas,
+            capability: "owned-drawing canvas surface",
+        });
+    }
+    node.children().iter().find_map(first_unsupported_element)
+}
+
 fn render_node(node: &MountedNode<ProjectedHandle>) -> ui::Element {
     let key = node.handle().value().to_string();
     match node.element().props() {
@@ -148,6 +160,12 @@ fn render_node(node: &MountedNode<ProjectedHandle>) -> ui::Element {
             message,
             tone,
         } => render_status(title, message, *tone, key),
+        Props::Canvas { .. } => {
+            // validate_application rejects declared canvas content before the
+            // host starts, and every platform pass re-checks the mounted tree
+            // through first_unsupported_element before rendering.
+            unreachable!("canvas elements are rejected before WinUI projection")
+        }
     }
 }
 

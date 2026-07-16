@@ -1,6 +1,6 @@
 //! Stable event slots shared by the reconciler and native adapters.
 
-use crate::TableSort;
+use crate::{PointerEvent, TableSort};
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
@@ -13,6 +13,8 @@ pub type InputHandler = Rc<dyn Fn(String)>;
 pub type ToggleHandler = Rc<dyn Fn(bool)>;
 /// Callback used by native sortable table headers.
 pub type SortHandler = Rc<dyn Fn(TableSort)>;
+/// Callback used by owned-drawing canvas surfaces.
+pub type PointerHandler = Rc<dyn Fn(PointerEvent)>;
 
 /// Event handlers associated with one declarative element.
 #[derive(Clone, Default)]
@@ -21,6 +23,7 @@ pub struct EventHandlers {
     pub(crate) input: Option<InputHandler>,
     pub(crate) toggle: Option<ToggleHandler>,
     pub(crate) sort: Option<SortHandler>,
+    pub(crate) pointer: Option<PointerHandler>,
 }
 
 impl fmt::Debug for EventHandlers {
@@ -31,6 +34,7 @@ impl fmt::Debug for EventHandlers {
             .field("input", &self.input.is_some())
             .field("toggle", &self.toggle.is_some())
             .field("sort", &self.sort.is_some())
+            .field("pointer", &self.pointer.is_some())
             .finish()
     }
 }
@@ -41,6 +45,7 @@ struct EventSlots {
     input: Option<InputHandler>,
     toggle: Option<ToggleHandler>,
     sort: Option<SortHandler>,
+    pointer: Option<PointerHandler>,
 }
 
 /// Stable native signal target whose handlers can be replaced after a render.
@@ -58,6 +63,7 @@ impl EventBindings {
             input: handlers.input.clone(),
             toggle: handlers.toggle.clone(),
             sort: handlers.sort.clone(),
+            pointer: handlers.pointer.clone(),
         })))
     }
 
@@ -68,6 +74,7 @@ impl EventBindings {
             input: None,
             toggle: None,
             sort: None,
+            pointer: None,
         })))
     }
 
@@ -78,6 +85,7 @@ impl EventBindings {
             input: Some(handler),
             toggle: None,
             sort: None,
+            pointer: None,
         })))
     }
 
@@ -87,6 +95,7 @@ impl EventBindings {
         slots.input.clone_from(&handlers.input);
         slots.toggle.clone_from(&handlers.toggle);
         slots.sort.clone_from(&handlers.sort);
+        slots.pointer.clone_from(&handlers.pointer);
     }
 
     /// Emits an activation event through the current handler.
@@ -120,6 +129,14 @@ impl EventBindings {
             handler(value);
         }
     }
+
+    /// Emits an element-local pointer event through the current handler.
+    pub fn emit_pointer(&self, value: PointerEvent) {
+        let handler = self.0.borrow().pointer.clone();
+        if let Some(handler) = handler {
+            handler(value);
+        }
+    }
 }
 
 impl fmt::Debug for EventBindings {
@@ -131,6 +148,7 @@ impl fmt::Debug for EventBindings {
             .field("input", &slots.input.is_some())
             .field("toggle", &slots.toggle.is_some())
             .field("sort", &slots.sort.is_some())
+            .field("pointer", &slots.pointer.is_some())
             .finish()
     }
 }

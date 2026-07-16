@@ -181,6 +181,18 @@ fn apply_patch(handle: &AppKitHandle, patch: &PropertyPatch) -> Result<(), AppKi
                 reload_native_list(&list)?;
             }
         }
+        Props::Canvas {
+            size,
+            scene,
+            accessibility_label,
+        } => {
+            set_string(handle.view(), SET_ACCESSIBILITY_LABEL, accessibility_label);
+            let canvas = handle.0.canvas_view.borrow();
+            let canvas = canvas
+                .as_ref()
+                .ok_or_else(|| AppKitError("canvas handle has no native canvas view".to_owned()))?;
+            canvas.apply_content(*size, scene);
+        }
         Props::Status { title, message, .. } => {
             if let Some(title_view) = handle.0.auxiliaries.first() {
                 set_string(title_view.as_object(), SET_STRING_VALUE, title);

@@ -1,12 +1,13 @@
 //! Deterministic consumer scenes shared by both native hosts.
 
 use rinka::{
-    Align, ApplicationSpec, Axis, ButtonRole, CollectionPattern, Component, ControlSize, Dispatch,
-    Element, Justify, PanelBehavior, Size, SortDirection, Spacing, StatusTone, Symbol, TableColumn,
-    TableSort, TextRole, ToolbarAction, ToolbarChoice, ToolbarDisplay, ToolbarGroupDisplay,
-    ToolbarItem, ToolbarMenuEntry, ToolbarPlacement, UiPattern, WindowContent, WindowId,
-    WindowKind, WindowSpec, button, column, label, list, list_row, mount_pattern, progress, row,
-    separator, spacer, status, toggle,
+    Align, ApplicationSpec, Axis, ButtonRole, CanvasColor, CanvasPoint, CanvasRect, CanvasSize,
+    CollectionPattern, Component, ControlSize, Dispatch, DrawScene, Element, Justify, LineWidth,
+    PanelBehavior, PointerEvent, PointerPhase, Size, SortDirection, Spacing, StatusTone, Symbol,
+    TableColumn, TableSort, TextRole, ToolbarAction, ToolbarChoice, ToolbarDisplay,
+    ToolbarGroupDisplay, ToolbarItem, ToolbarMenuEntry, ToolbarPlacement, UiPattern, WindowContent,
+    WindowId, WindowKind, WindowSpec, button, canvas, column, label, list, list_row, mount_pattern,
+    progress, row, separator, spacer, status, toggle,
 };
 
 /// Meaningful UI state used by the consumer verification matrix.
@@ -20,6 +21,8 @@ pub enum Scene {
     Busy,
     /// Directory read failure.
     Error,
+    /// Owned-drawing canvas test pattern.
+    Canvas,
 }
 
 impl Scene {
@@ -30,6 +33,7 @@ impl Scene {
             Self::Empty => "empty",
             Self::Busy => "busy",
             Self::Error => "error",
+            Self::Canvas => "canvas",
         }
     }
 
@@ -40,13 +44,20 @@ impl Scene {
             "empty" => Some(Self::Empty),
             "busy" => Some(Self::Busy),
             "error" => Some(Self::Error),
+            "canvas" => Some(Self::Canvas),
             _ => None,
         }
     }
 
     /// Returns every required state in deterministic order.
-    pub const fn all() -> [Self; 4] {
-        [Self::Ready, Self::Empty, Self::Busy, Self::Error]
+    pub const fn all() -> [Self; 5] {
+        [
+            Self::Ready,
+            Self::Empty,
+            Self::Busy,
+            Self::Error,
+            Self::Canvas,
+        ]
     }
 }
 
@@ -116,6 +127,7 @@ struct ExplorerComponent {
     src_expanded: bool,
     assets_expanded: bool,
     sort: TableSort,
+    canvas_pointer: Option<PointerEvent>,
 }
 
 impl ExplorerComponent {
@@ -133,6 +145,7 @@ impl ExplorerComponent {
                 column_id: "name".to_owned(),
                 direction: SortDirection::Ascending,
             },
+            canvas_pointer: None,
         }
     }
 }
@@ -144,6 +157,7 @@ enum ExplorerMessage {
     SetSort(TableSort),
     SetSectionExpanded(&'static str, bool),
     SetFileExpanded(FileKey, bool),
+    CanvasPointer(PointerEvent),
 }
 
 impl Component for ExplorerComponent {
@@ -175,6 +189,7 @@ impl Component for ExplorerComponent {
                 FileKey::Assets => self.assets_expanded = expanded,
                 _ => {}
             },
+            ExplorerMessage::CanvasPointer(event) => self.canvas_pointer = Some(event),
         }
     }
 
@@ -542,7 +557,208 @@ fn scene_body(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) ->
         .justify(Justify::Center)
         .spacing(Spacing::Section)
         .with_key("directory-error-stack"),
+        Scene::Canvas => canvas_pane(model, dispatch),
     }
+}
+
+/// Logical cell size of the deterministic canvas grid.
+const CANVAS_CELL: f64 = 32.0;
+/// Grid columns in the deterministic canvas test pattern.
+const CANVAS_GRID_COLUMNS: usize = 8;
+/// Grid rows in the deterministic canvas test pattern.
+const CANVAS_GRID_ROWS: usize = 5;
+/// Outer margin around the deterministic canvas test pattern.
+const CANVAS_MARGIN: f64 = 8.0;
+/// Full logical extent of the canvas test pattern.
+const CANVAS_EXTENT: CanvasSize = CanvasSize::new(
+    CANVAS_MARGIN * 2.0 + CANVAS_CELL * CANVAS_GRID_COLUMNS as f64,
+    CANVAS_MARGIN * 2.0 + CANVAS_CELL * CANVAS_GRID_ROWS as f64 + 64.0,
+);
+
+fn canvas_pane(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) -> Element {
+    column([
+        row([
+            spacer(true, false).with_key("canvas-leading-space"),
+            canvas(
+                CANVAS_EXTENT,
+                canvas_test_pattern(model.canvas_pointer),
+                "Canvas test pattern: cell grid, color palette, gauge, and monospace glyph run",
+            )
+            .on_pointer(move |event| dispatch.emit(ExplorerMessage::CanvasPointer(event)))
+            .with_key("canvas-surface"),
+            spacer(true, false).with_key("canvas-trailing-space"),
+        ])
+        .align(Align::Center)
+        .with_key("canvas-row"),
+        row([
+            spacer(true, false).with_key("canvas-caption-leading-space"),
+            label(canvas_pointer_caption(model.canvas_pointer))
+                .text_role(TextRole::Monospace)
+                .with_key("canvas-pointer-caption"),
+            spacer(true, false).with_key("canvas-caption-trailing-space"),
+        ])
+        .align(Align::Center)
+        .with_key("canvas-caption-row"),
+    ])
+    .justify(Justify::Center)
+    .spacing(Spacing::Section)
+    .with_key("canvas-pane")
+}
+
+fn canvas_pointer_caption(pointer: Option<PointerEvent>) -> String {
+    match pointer {
+        None => "pointer: none".to_owned(),
+        Some(event) => {
+            let phase = match event.phase {
+                PointerPhase::Down => "down",
+                PointerPhase::Up => "up",
+                PointerPhase::Move => "move",
+                PointerPhase::Drag => "drag",
+                PointerPhase::Scroll => "scroll",
+            };
+            format!(
+                "pointer: {phase} @ ({:.1}, {:.1})",
+                event.position.x, event.position.y
+            )
+        }
+    }
+}
+
+/// Builds the deterministic owned-drawing test pattern: a hairline cell
+/// grid, a color palette strip, a ring gauge, a clipped disc, and one
+/// monospace glyph run. The optional crosshair follows the last pointer
+/// event so the round trip is visible on screen.
+fn canvas_test_pattern(pointer: Option<PointerEvent>) -> DrawScene {
+    let mut scene = DrawScene::new();
+    let grid_left = CANVAS_MARGIN;
+    let grid_top = CANVAS_MARGIN;
+    let grid_width = CANVAS_CELL * CANVAS_GRID_COLUMNS as f64;
+    let grid_height = CANVAS_CELL * CANVAS_GRID_ROWS as f64;
+
+    // Panel background and subtle checkerboard.
+    scene.fill_rect(
+        CanvasRect::new(0.0, 0.0, CANVAS_EXTENT.width, CANVAS_EXTENT.height),
+        CanvasColor::rgb(0.08, 0.09, 0.12),
+    );
+    for row in 0..CANVAS_GRID_ROWS {
+        for column in 0..CANVAS_GRID_COLUMNS {
+            if (row + column) % 2 == 0 {
+                continue;
+            }
+            scene.fill_rect(
+                CanvasRect::new(
+                    grid_left + column as f64 * CANVAS_CELL,
+                    grid_top + row as f64 * CANVAS_CELL,
+                    CANVAS_CELL,
+                    CANVAS_CELL,
+                ),
+                CanvasColor::rgb(0.12, 0.14, 0.18),
+            );
+        }
+    }
+
+    // Hairline cell grid: exactly one device pixel per line at any scale.
+    let grid_line = CanvasColor::rgb(0.35, 0.38, 0.45);
+    for column in 0..=CANVAS_GRID_COLUMNS {
+        let x = grid_left + column as f64 * CANVAS_CELL;
+        scene.line(
+            CanvasPoint::new(x, grid_top),
+            CanvasPoint::new(x, grid_top + grid_height),
+            LineWidth::Hairline,
+            grid_line,
+        );
+    }
+    for row in 0..=CANVAS_GRID_ROWS {
+        let y = grid_top + row as f64 * CANVAS_CELL;
+        scene.line(
+            CanvasPoint::new(grid_left, y),
+            CanvasPoint::new(grid_left + grid_width, y),
+            LineWidth::Hairline,
+            grid_line,
+        );
+    }
+
+    // Color palette rects inside the first grid row.
+    let palette = [
+        CanvasColor::rgb(0.86, 0.27, 0.27),
+        CanvasColor::rgb(0.92, 0.56, 0.18),
+        CanvasColor::rgb(0.93, 0.83, 0.25),
+        CanvasColor::rgb(0.30, 0.74, 0.38),
+        CanvasColor::rgb(0.26, 0.52, 0.90),
+        CanvasColor::rgb(0.61, 0.36, 0.86),
+    ];
+    for (index, color) in palette.into_iter().enumerate() {
+        scene.fill_rect(
+            CanvasRect::new(
+                grid_left + index as f64 * CANVAS_CELL + 6.0,
+                grid_top + 6.0,
+                CANVAS_CELL - 12.0,
+                CANVAS_CELL - 12.0,
+            ),
+            color,
+        );
+    }
+
+    // Ring gauge: full track circle plus a 270-degree progress arc.
+    let gauge_center =
+        CanvasPoint::new(grid_left + 1.5 * CANVAS_CELL, grid_top + 3.0 * CANVAS_CELL);
+    scene.stroke_circle(
+        gauge_center,
+        CANVAS_CELL * 0.75,
+        LineWidth::Points(4.0),
+        CanvasColor::rgb(0.22, 0.25, 0.32),
+    );
+    scene.stroke_arc(
+        gauge_center,
+        CANVAS_CELL * 0.75,
+        -std::f64::consts::FRAC_PI_2,
+        std::f64::consts::PI,
+        LineWidth::Points(4.0),
+        CanvasColor::rgb(0.92, 0.56, 0.18),
+    );
+    scene.fill_circle(gauge_center, 3.0, CanvasColor::rgb(0.92, 0.56, 0.18));
+
+    // Clip demonstration: a disc twice the cell size confined to one cell.
+    let clip_cell = CanvasRect::new(
+        grid_left + 5.0 * CANVAS_CELL,
+        grid_top + 2.0 * CANVAS_CELL,
+        CANVAS_CELL,
+        CANVAS_CELL,
+    );
+    scene.push_clip(clip_cell);
+    scene.fill_circle(
+        CanvasPoint::new(clip_cell.origin.x, clip_cell.origin.y),
+        CANVAS_CELL,
+        CanvasColor::rgba(0.25, 0.78, 0.72, 0.9),
+    );
+    scene.pop_clip();
+
+    // Monospace glyph run below the grid.
+    scene.glyph_run(
+        CanvasPoint::new(grid_left, grid_top + grid_height + 12.0),
+        "RINKA CANVAS 0123456789",
+        13.0,
+        CanvasColor::rgb(0.92, 0.94, 0.97),
+    );
+
+    // Crosshair follows the last pointer event.
+    if let Some(event) = pointer {
+        let accent = CanvasColor::rgb(1.0, 0.32, 0.32);
+        scene.line(
+            CanvasPoint::new(event.position.x, 0.0),
+            CanvasPoint::new(event.position.x, CANVAS_EXTENT.height),
+            LineWidth::Hairline,
+            accent,
+        );
+        scene.line(
+            CanvasPoint::new(0.0, event.position.y),
+            CanvasPoint::new(CANVAS_EXTENT.width, event.position.y),
+            LineWidth::Hairline,
+            accent,
+        );
+        scene.stroke_circle(event.position, 6.0, LineWidth::Points(1.5), accent);
+    }
+    scene
 }
 
 fn file_list(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) -> Element {
@@ -792,6 +1008,11 @@ fn inspector(model: &ExplorerComponent) -> Element {
             "Reconnect to inspect files.",
             StatusTone::Error,
         ),
+        Scene::Canvas => inspector_status(
+            "Canvas surface",
+            "The content pane owns its drawing.",
+            StatusTone::Informational,
+        ),
     };
 
     column([
@@ -861,12 +1082,13 @@ fn scene_summary(model: &ExplorerComponent) -> String {
         Scene::Empty => "0 items".to_owned(),
         Scene::Busy => "Refreshing…".to_owned(),
         Scene::Error => "No items available".to_owned(),
+        Scene::Canvas => "Deterministic canvas test pattern".to_owned(),
     }
 }
 
 const fn connection_status(scene: Scene) -> &'static str {
     match scene {
-        Scene::Ready | Scene::Empty | Scene::Busy => "Connected securely",
+        Scene::Ready | Scene::Empty | Scene::Busy | Scene::Canvas => "Connected securely",
         Scene::Error => "Connection interrupted",
     }
 }

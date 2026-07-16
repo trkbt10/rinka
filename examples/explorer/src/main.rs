@@ -14,9 +14,10 @@ fn requested_scene(arguments: &[String]) -> Result<view::Scene, String> {
     };
     let value = arguments
         .get(index + 1)
-        .ok_or_else(|| "--scene requires ready, empty, busy, or error".to_owned())?;
-    view::Scene::parse(value)
-        .ok_or_else(|| format!("unknown scene '{value}'; expected ready, empty, busy, or error"))
+        .ok_or_else(|| "--scene requires ready, empty, busy, error, or canvas".to_owned())?;
+    view::Scene::parse(value).ok_or_else(|| {
+        format!("unknown scene '{value}'; expected ready, empty, busy, error, or canvas")
+    })
 }
 
 fn main() -> ExitCode {

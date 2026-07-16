@@ -29,6 +29,8 @@ pub enum ElementKind {
     ListRow,
     /// Empty, busy, or error state.
     Status,
+    /// Owned-drawing surface reserved for inherently graphical content.
+    Canvas,
 }
 
 /// Primary layout direction.
@@ -435,6 +437,19 @@ pub enum Props {
         /// Status intent.
         tone: StatusTone,
     },
+    /// Owned-drawing canvas properties.
+    ///
+    /// Reserved for inherently graphical content such as terminal cell
+    /// grids, audio meters, and dashboard widget faces. A canvas that
+    /// imitates a native control violates the design contract.
+    Canvas {
+        /// Intrinsic content extent in logical points.
+        size: crate::CanvasSize,
+        /// Recorded display list rebuilt by the application each render.
+        scene: crate::DrawScene,
+        /// Screen-reader description of the graphical content.
+        accessibility_label: String,
+    },
 }
 
 impl Props {
@@ -465,6 +480,10 @@ impl Props {
             | Self::ListRow {
                 accessibility_label,
                 ..
+            }
+            | Self::Canvas {
+                accessibility_label,
+                ..
             } => Some(accessibility_label),
             Self::Status { title, .. } => Some(title),
             _ => None,
@@ -487,6 +506,7 @@ impl Props {
             Self::List { .. } => ElementKind::List,
             Self::ListRow { .. } => ElementKind::ListRow,
             Self::Status { .. } => ElementKind::Status,
+            Self::Canvas { .. } => ElementKind::Canvas,
         }
     }
 }

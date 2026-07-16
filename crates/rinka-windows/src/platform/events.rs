@@ -424,6 +424,12 @@ fn native_description(element: &Element) -> (&'static str, String, u32, u32) {
             WS_CHILD | WS_VISIBLE | SS_CENTER | SS_NOTIFY,
             WS_EX_CONTROLPARENT,
         ),
+        Props::Canvas { .. } => {
+            // validate_element returns the typed unsupported-capability
+            // diagnostic for every canvas before the renderer issues any
+            // native mutation, so creation can never observe one.
+            unreachable!("canvas elements are rejected by validate_element before creation")
+        }
     }
 }
 

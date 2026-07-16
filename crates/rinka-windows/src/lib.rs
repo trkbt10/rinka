@@ -66,6 +66,12 @@ pub fn validate_element(element: &Element) -> Result<(), WindowsDiagnostic> {
             capability: "glass button material",
         });
     }
+    if element.kind() == ElementKind::Canvas {
+        return Err(WindowsDiagnostic::UnsupportedCapability {
+            element: ElementKind::Canvas,
+            capability: "owned-drawing canvas surface",
+        });
+    }
     Ok(())
 }
 
@@ -104,5 +110,21 @@ mod tests {
     #[test]
     fn ordinary_native_button_is_supported() {
         assert_eq!(validate_element(&button("Action", "Action", || {})), Ok(()));
+    }
+
+    #[test]
+    fn canvas_is_a_typed_unsupported_capability() {
+        let element = rinka_core::canvas(
+            rinka_core::CanvasSize::new(32.0, 32.0),
+            rinka_core::DrawScene::new(),
+            "Level meter",
+        );
+        assert_eq!(
+            validate_element(&element),
+            Err(WindowsDiagnostic::UnsupportedCapability {
+                element: ElementKind::Canvas,
+                capability: "owned-drawing canvas surface",
+            })
+        );
     }
 }

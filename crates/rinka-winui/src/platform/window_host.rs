@@ -137,6 +137,11 @@ impl ui::Component for WindowComponent {
         if let Some(error) = projection.take_error() {
             return render_projection_error(&error.to_string());
         }
+        if let Some(diagnostic) = projection.with_root(first_unsupported_element).flatten() {
+            // Typed unsupported-capability rejection: the platform pass never
+            // substitutes a visually unrelated control for the element.
+            return render_projection_error(&diagnostic.to_string());
+        }
 
         projection
             .with_root(|root| {

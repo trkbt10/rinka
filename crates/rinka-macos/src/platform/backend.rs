@@ -16,6 +16,7 @@ struct HandleInner {
     content_fit_source_width_capped: Cell<bool>,
     table_delegate: RefCell<Option<Retained<TableDelegate>>>,
     list_row: RefCell<Option<Rc<RefCell<TableRowRecord>>>>,
+    canvas_view: RefCell<Option<Retained<CanvasView>>>,
     parent: RefCell<Option<Weak<HandleInner>>>,
     justification_views: RefCell<Vec<Id>>,
     justification_constraints: RefCell<Vec<Id>>,
@@ -71,6 +72,7 @@ impl AppKitHandle {
             content_fit_source_width_capped: Cell::new(false),
             table_delegate: RefCell::new(None),
             list_row: RefCell::new(None),
+            canvas_view: RefCell::new(None),
             parent: RefCell::new(None),
             justification_views: RefCell::new(Vec::new()),
             justification_constraints: RefCell::new(Vec::new()),
@@ -97,6 +99,7 @@ impl AppKitHandle {
             content_fit_source_width_capped: Cell::new(false),
             table_delegate: RefCell::new(None),
             list_row: RefCell::new(None),
+            canvas_view: RefCell::new(None),
             parent: RefCell::new(None),
             justification_views: RefCell::new(Vec::new()),
             justification_constraints: RefCell::new(Vec::new()),
@@ -190,6 +193,10 @@ impl NativeBackend for AppKitBackend {
 
     fn validate(&self, _element: &Element) -> Result<(), Self::Error> {
         Ok(())
+    }
+
+    fn monospace_metrics(&self, font_size: f64) -> Option<MonospaceMetrics> {
+        measure_monospace_metrics(font_size)
     }
 
     fn create(
@@ -567,6 +574,17 @@ fn create_element(
             message,
             tone,
         } => create_status(title, message, *tone),
+        Props::Canvas {
+            size,
+            scene,
+            accessibility_label,
+        } => Ok(create_canvas(
+            mtm,
+            *size,
+            scene,
+            accessibility_label,
+            events,
+        )),
     }
 }
 
