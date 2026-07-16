@@ -1,0 +1,19 @@
+[package]
+name = "rinka-winui"
+description = "Native WinUI 3 adapter for Rinka applications"
+version.workspace = true
+edition.workspace = true
+rust-version = "1.95"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rinka-core = { path = "../rinka-core" }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-reactor = { git = "https://github.com/microsoft/windows-rs", rev = "36bd4a592df4fc5565f9e589138bc27110016904" }
+windows-core = { git = "https://github.com/microsoft/windows-rs", rev = "36bd4a592df4fc5565f9e589138bc27110016904" }
+
+[lints]
+workspace = true

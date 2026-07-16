@@ -16,8 +16,18 @@ Read this file and `README.md` before changing product code.
 - `crates/rinka-gtk` owns GTK 4 and libadwaita object creation, signals,
   Ubuntu window behavior, adaptive layout, native styles, and accessibility
   mapping.
+- `crates/rinka-winui` owns the default Windows projection into native
+  WinUI 3 controls, Windows App SDK window and panel hosting, Mica materials,
+  adaptive NavigationView layout, Fluent tokens, and UI Automation mapping.
+  It uses the pinned Microsoft `windows-reactor` source revision recorded in
+  its manifest and requires Rust 1.95 or newer.
+- `crates/rinka-windows` owns the classic Win32/Common Controls v6 contract
+  probe, including per-monitor DPI behavior, native HWND identity, and the
+  server-side compatibility checks. It is not the default Explorer renderer.
 - `examples/explorer` is the required consumer. A public UI contract is not
   considered verified until the explorer uses it on both supported platforms.
+  Windows contracts additionally require the Explorer consumer on Windows
+  Server 2025 Desktop Experience.
 
 ## Visual rules
 
@@ -34,9 +44,16 @@ Read this file and `README.md` before changing product code.
    visually primary.
 5. Ubuntu uses GTK 4 and libadwaita patterns, including header bars, adaptive
    split views, native status pages, and platform spacing.
-6. Every interactive element has a visible label or tooltip, an accessibility
+6. The default Windows consumer uses WinUI 3 controls, the native TitleBar and
+   NavigationView, Mica base surfaces, the Segoe UI Variable native default,
+   and Fluent spacing on a four-epx grid. Acrylic is reserved for transient
+   light-dismiss surfaces.
+7. Windows Server 2025 Desktop Experience is the automated Windows host. Its
+   captures prove the implementation on that server and do not certify genuine
+   Windows 11 DWM corners or backdrop composition.
+8. Every interactive element has a visible label or tooltip, an accessibility
    label, keyboard behavior, enabled state, and focus behavior.
-7. Visual verification requires real light and dark captures at useful and
+9. Visual verification requires real light and dark captures at useful and
    narrow window sizes. A test-only tree snapshot is not visual evidence.
 
 ## Runtime rules
@@ -52,8 +69,21 @@ Read this file and `README.md` before changing product code.
 - Window and panel lifecycle is separate from child-view reconciliation.
 - Unsafe Rust is confined to the macOS binding boundary and each unsafe block
   documents the platform invariant it relies on.
+- Windows unsafe Rust is confined to `crates/rinka-windows/src/platform.rs`;
+  every unsafe block documents the HWND, pointer, thread, or message-lifetime
+  invariant it relies on.
+- `crates/rinka-winui` does not exchange toolkit objects with
+  `crates/rinka-windows`; the two adapters use different Windows binding
+  generations and run as separate host paths.
 
 ## Gate
 
 Run `make typecheck`, `make lint`, `make test`, and `make build`. Then run the
 consumer fixture and capture the real platform rendering before landing.
+Windows changes additionally require a Windows Server 2025 MSVC build,
+PerMonitorV2 verification, UI Automation extraction, native class inspection,
+three navigation/inspector pane cycles with a fixed top-level frame, and the
+complete scene/appearance/size capture matrix.
+Executable packages that use `rinka-winui` own their self-contained
+Windows App SDK staging through `windows-reactor-setup` in `build.rs`; the
+reusable adapter crate must not stage runtime files.

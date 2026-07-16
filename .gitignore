@@ -1,0 +1,4 @@
+/target
+/.fixture
+/verification
+.DS_Store

@@ -1,0 +1,19 @@
+[package]
+name = "rinka-macos"
+description = "AppKit native host for Rinka"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rinka-core = { path = "../rinka-core" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6.4", features = ["exception"] }
+objc2-foundation = "0.3.2"
+
+[lints]
+workspace = true

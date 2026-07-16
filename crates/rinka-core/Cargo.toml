@@ -1,0 +1,12 @@
+[package]
+name = "rinka-core"
+description = "Platform-neutral declarative runtime and native host contracts for Rinka"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

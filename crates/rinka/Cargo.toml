@@ -1,0 +1,15 @@
+[package]
+name = "rinka"
+description = "Declarative Rust API for native macOS, Ubuntu, and Windows interfaces"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rinka-core = { path = "../rinka-core" }
+
+[lints]
+workspace = true

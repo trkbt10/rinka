@@ -1,0 +1,22 @@
+[package]
+name = "rinka-windows-fluent-poc"
+description = "WinUI 3 native shell proof for the Rinka Windows host"
+version.workspace = true
+edition.workspace = true
+rust-version = "1.95"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+rinka-explorer = { path = "../explorer" }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+rinka-winui = { path = "../../crates/rinka-winui" }
+
+[target.'cfg(target_os = "windows")'.build-dependencies]
+windows-reactor-setup = { git = "https://github.com/microsoft/windows-rs", rev = "36bd4a592df4fc5565f9e589138bc27110016904" }
+
+[lints]
+workspace = true

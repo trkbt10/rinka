@@ -1,0 +1,19 @@
+[package]
+name = "rinka-gtk"
+description = "GTK 4 and libadwaita native host for Rinka"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rinka-core = { path = "../rinka-core" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+adw = { package = "libadwaita", version = "0.7.2", features = ["v1_5"] }
+gtk = { package = "gtk4", version = "0.9.7", features = ["v4_14"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,33 @@
+[package]
+name = "rinka-explorer"
+description = "File explorer consumer for Rinka platform verification"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+rinka = { path = "../../crates/rinka" }
+rinka-headless = { path = "../../crates/rinka-headless" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+rinka-macos = { path = "../../crates/rinka-macos" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rinka-gtk = { path = "../../crates/rinka-gtk" }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+rinka-winui = { path = "../../crates/rinka-winui" }
+rinka-windows = { path = "../../crates/rinka-windows" }
+
+[build-dependencies]
+embed-resource = "3.0.6"
+
+[target.'cfg(target_os = "windows")'.build-dependencies]
+windows-reactor-setup = { git = "https://github.com/microsoft/windows-rs", rev = "36bd4a592df4fc5565f9e589138bc27110016904" }
+
+[lints]
+workspace = true

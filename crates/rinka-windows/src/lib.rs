@@ -1,0 +1,108 @@
+//! Windows Server 2025 native host built from Win32 and Common Controls v6.
+
+use rinka_core::{ButtonMaterial, Element, ElementKind, Props};
+use std::error::Error;
+use std::fmt;
+
+/// Identifies this platform adapter in diagnostics.
+pub const PLATFORM_NAME: &str = "Windows Win32 + Common Controls v6";
+
+/// A typed rejection or native-operation failure from the Windows adapter.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WindowsDiagnostic {
+    /// A declared semantic capability has no equivalent native Windows control.
+    UnsupportedCapability {
+        /// Element that requested the capability.
+        element: ElementKind,
+        /// Stable capability identifier.
+        capability: &'static str,
+    },
+    /// A Win32 operation returned an operating-system error.
+    NativeOperation {
+        /// Operation that failed.
+        operation: &'static str,
+        /// `GetLastError` value captured at the failure site.
+        code: u32,
+    },
+    /// A Windows resource or element relationship was internally inconsistent.
+    InvalidNativeState {
+        /// Explanation suitable for a build or verification log.
+        reason: String,
+    },
+}
+
+impl fmt::Display for WindowsDiagnostic {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedCapability {
+                element,
+                capability,
+            } => write!(
+                formatter,
+                "Windows adapter does not implement {capability} for {element:?}"
+            ),
+            Self::NativeOperation { operation, code } => {
+                write!(
+                    formatter,
+                    "Win32 operation {operation} failed with code {code}"
+                )
+            }
+            Self::InvalidNativeState { reason } => formatter.write_str(reason),
+        }
+    }
+}
+
+impl Error for WindowsDiagnostic {}
+
+/// Validates one element against native Windows semantic capabilities.
+pub fn validate_element(element: &Element) -> Result<(), WindowsDiagnostic> {
+    if let Props::Button {
+        material: ButtonMaterial::Glass,
+        ..
+    } = element.props()
+    {
+        return Err(WindowsDiagnostic::UnsupportedCapability {
+            element: ElementKind::Button,
+            capability: "glass button material",
+        });
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+mod platform;
+
+#[cfg(target_os = "windows")]
+pub use platform::{WindowsHandle, run};
+
+#[cfg(not(target_os = "windows"))]
+/// Reports a programming error when invoked on another operating system.
+pub fn run(_application: rinka_core::ApplicationSpec) -> Result<(), WindowsDiagnostic> {
+    Err(WindowsDiagnostic::UnsupportedCapability {
+        element: ElementKind::Workspace,
+        capability: "Windows desktop process",
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WindowsDiagnostic, validate_element};
+    use rinka_core::{ButtonMaterial, ElementKind, button};
+
+    #[test]
+    fn glass_material_is_a_typed_diagnostic() {
+        let element = button("Action", "Action", || {}).button_material(ButtonMaterial::Glass);
+        assert_eq!(
+            validate_element(&element),
+            Err(WindowsDiagnostic::UnsupportedCapability {
+                element: ElementKind::Button,
+                capability: "glass button material",
+            })
+        );
+    }
+
+    #[test]
+    fn ordinary_native_button_is_supported() {
+        assert_eq!(validate_element(&button("Action", "Action", || {})), Ok(()));
+    }
+}
