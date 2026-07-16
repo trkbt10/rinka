@@ -6,13 +6,15 @@ pub use clipboard::FakeClipboard;
 
 use rinka_core::{
     ContextMenu, DialogDescription, DialogOutcome, DialogRequest, DialogResponder, DialogService,
-    Element, EventBindings, MonospaceMetrics, NativeBackend, PropertyPatch, Props, TextChange,
-    TextEdit, TextRevision, TextSelection, TextSyncAction,
+    DragPayload, DropPosition, DropTarget, Element, EventBindings, FileDrop, FilePromise,
+    MonospaceMetrics, NativeBackend, PayloadDrop, PropertyPatch, Props, TextChange, TextEdit,
+    TextRevision, TextSelection, TextSyncAction,
 };
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 /// Stable synthetic native handle.
@@ -124,6 +126,9 @@ struct Node {
     key: Option<String>,
     props: Props,
     context_menu: Option<ContextMenu>,
+    file_promise: Option<FilePromise>,
+    drag_payload: Option<DragPayload>,
+    drop_target: Option<DropTarget>,
     events: EventBindings,
     children: Vec<Handle>,
     text_area: Option<TextAreaModel>,
@@ -244,6 +249,9 @@ impl HeadlessBackend {
                     justify: rinka_core::Justify::Start,
                 },
                 context_menu: None,
+                file_promise: None,
+                drag_payload: None,
+                drop_target: None,
                 events: EventBindings::default(),
                 children: Vec::new(),
                 text_area: None,
@@ -289,6 +297,117 @@ impl HeadlessBackend {
         self.nodes
             .get(&handle)
             .and_then(|node| node.context_menu.as_ref())
+    }
+
+    /// Returns the current native file-promise drag-source model.
+    pub fn file_promise_of(&self, handle: Handle) -> Option<&FilePromise> {
+        self.nodes
+            .get(&handle)
+            .and_then(|node| node.file_promise.as_ref())
+    }
+
+    /// Returns the current native typed-payload drag-source model.
+    pub fn drag_payload_of(&self, handle: Handle) -> Option<&DragPayload> {
+        self.nodes
+            .get(&handle)
+            .and_then(|node| node.drag_payload.as_ref())
+    }
+
+    /// Returns the current native drop-target model.
+    pub fn drop_target_of(&self, handle: Handle) -> Option<&DropTarget> {
+        self.nodes
+            .get(&handle)
+            .and_then(|node| node.drop_target.as_ref())
+    }
+
+    /// Simulates the operating system dropping files at a point inside the
+    /// target element, expressed in the target's local coordinates.
+    ///
+    /// Delivery goes through the target's stable event binding, which
+    /// refuses the drop — exactly like a native session's validation phase —
+    /// when the current drop-target model does not accept files.
+    pub fn simulate_file_drop(
+        &self,
+        target: Handle,
+        paths: impl IntoIterator<Item = PathBuf>,
+        position: DropPosition,
+    ) -> Result<(), HeadlessError> {
+        let node = self
+            .nodes
+            .get(&target)
+            .ok_or_else(|| HeadlessError(format!("unknown drop target {}", target.0)))?;
+        if node.events.emit_file_drop(FileDrop {
+            paths: paths.into_iter().collect(),
+            position,
+        }) {
+            Ok(())
+        } else {
+            Err(HeadlessError(format!(
+                "target {} refused the file drop",
+                target.0
+            )))
+        }
+    }
+
+    /// Simulates one complete intra-application drag session: the source's
+    /// current typed payload is dropped onto the target at a point in the
+    /// target's local coordinates.
+    ///
+    /// Returns the delivered payload. The session fails deterministically
+    /// when the source declares no payload or the target's current model
+    /// does not accept the payload's type — the same refusals a native
+    /// session's validation phase produces.
+    pub fn simulate_payload_drag(
+        &self,
+        source: Handle,
+        target: Handle,
+        position: DropPosition,
+    ) -> Result<DragPayload, HeadlessError> {
+        let source_node = self
+            .nodes
+            .get(&source)
+            .ok_or_else(|| HeadlessError(format!("unknown drag source {}", source.0)))?;
+        let payload = source_node.events.drag_payload().ok_or_else(|| {
+            HeadlessError(format!("source {} declares no drag payload", source.0))
+        })?;
+        let target_node = self
+            .nodes
+            .get(&target)
+            .ok_or_else(|| HeadlessError(format!("unknown drop target {}", target.0)))?;
+        if target_node.events.emit_payload_drop(PayloadDrop {
+            payload: payload.clone(),
+            position,
+        }) {
+            Ok(payload)
+        } else {
+            Err(HeadlessError(format!(
+                "target {} refused the '{}' payload",
+                target.0,
+                payload.payload_type()
+            )))
+        }
+    }
+
+    /// Simulates a destination accepting the source's promised file: the
+    /// promise's write callback materializes the content inside the
+    /// destination directory, exactly once, and the written path returns.
+    pub fn materialize_file_promise(
+        &self,
+        source: Handle,
+        destination_directory: &Path,
+    ) -> Result<PathBuf, HeadlessError> {
+        let node = self
+            .nodes
+            .get(&source)
+            .ok_or_else(|| HeadlessError(format!("unknown drag source {}", source.0)))?;
+        let promise = node.events.file_promise().ok_or_else(|| {
+            HeadlessError(format!("source {} declares no file promise", source.0))
+        })?;
+        let destination = destination_directory.join(promise.file_name());
+        promise
+            .write_to(&destination)
+            .map_err(|reason| HeadlessError(format!("promised write failed: {reason}")))?;
+        Ok(destination)
     }
 
     /// Returns the stable event target.
@@ -427,6 +546,9 @@ impl NativeBackend for HeadlessBackend {
                 key: element.key().map(|key| key.as_str().to_owned()),
                 props: props.clone(),
                 context_menu: element.context_menu_model().cloned(),
+                file_promise: element.file_promise_model().cloned(),
+                drag_payload: element.drag_payload_model().cloned(),
+                drop_target: element.drop_target_model().cloned(),
                 events,
                 children: Vec::new(),
                 text_area,
@@ -489,6 +611,9 @@ impl NativeBackend for HeadlessBackend {
         }
         node.props.clone_from(patch.props());
         node.context_menu = patch.context_menu().cloned();
+        node.file_promise = patch.file_promise().cloned();
+        node.drag_payload = patch.drag_payload().cloned();
+        node.drop_target = patch.drop_target().cloned();
         self.operations.push(Operation::Patch {
             handle: *handle,
             patch: patch.clone(),
