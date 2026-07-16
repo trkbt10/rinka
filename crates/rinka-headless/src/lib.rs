@@ -2,9 +2,11 @@
 
 mod clipboard;
 mod text_input;
+mod window_host;
 
 pub use clipboard::FakeClipboard;
 pub use text_input::SyntheticTextInput;
+pub use window_host::{CloseRequestOutcome, HeadlessWindowHost, WindowOperation};
 
 use rinka_core::{
     ContextMenu, DialogDescription, DialogOutcome, DialogRequest, DialogResponder, DialogService,
