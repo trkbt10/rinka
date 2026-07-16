@@ -12,9 +12,9 @@ use rinka_core::{
     HighlightRole, HighlightSpan, HighlightSpans, ImageContent, ImageScaling, InputKind, Justify,
     KeyChord, KeyIdentity, KeyRoutingContext, LineWidth, ListRowRole, MenuEntry, MenuItem,
     Modifiers, MonospaceMetrics, MountedNode, NativeBackend, PanelBehavior, PatternRegion,
-    PlatformServices, PointerButton, PointerEvent, PointerModifiers, PointerPhase, PrimaryModifier,
-    PropertyPatch, Props, Renderer, SortDirection, Spacing, StatusTone, Symbol, TableColumn,
-    TableSort, TextChange, TextContent, TextEdit, TextRange, TextRevision, TextRole, TextSelection,
+    PointerButton, PointerEvent, PointerModifiers, PointerPhase, PrimaryModifier, PropertyPatch,
+    Props, Renderer, SortDirection, Spacing, StatusTone, Symbol, TableColumn, TableSort,
+    TextChange, TextContent, TextEdit, TextRange, TextRevision, TextRole, TextSelection,
     TextSyncAction, ToolbarAction, ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem,
     ToolbarItemKind, ToolbarPlacement, UiPattern, WindowId, WindowKind, WindowRuntime, WindowSpec,
 };
