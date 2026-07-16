@@ -38,6 +38,7 @@ fn build_window(
     mtm: MainThreadMarker,
     spec: &WindowSpec,
     split_restore_pending: Rc<Cell<bool>>,
+    window_service: AppKitWindowService,
 ) -> Result<BuiltWindow, AppKitError> {
     let frame = Rect {
         origin: Point::default(),
@@ -96,11 +97,13 @@ fn build_window(
     ));
     // Dialog requests raised by this window's component present as sheets
     // on this window (window-modal, never app-modal). The registry unions
-    // the pasteboard clipboard service with the per-window dialog presenter.
-    let services =
-        pasteboard_platform_services().with_dialog_service(AppKitWindowDialogService {
+    // the pasteboard clipboard service with the per-window dialog presenter
+    // and the delegate-backed runtime window service.
+    let services = pasteboard_platform_services()
+        .with_dialog_service(AppKitWindowDialogService {
             window: window.clone(),
-        });
+        })
+        .with_window_service(window_service);
     let runtime = WindowRuntime::mount(renderer, spec.content.clone(), services)
         .map_err(|error| AppKitError(error.to_string()))?;
     runtime.with_renderer(|renderer| {
@@ -284,6 +287,31 @@ fn finalize_split_mount(handle: &AppKitHandle) {
             }
         }
         let _: () = msg_send![handle.view(), layoutSubtreeIfNeeded];
+    }
+}
+
+/// Applies the content root's declared title, if any, to the native window.
+///
+/// The declaration is reconciled state: the host calls this after every
+/// reconciliation, so a title computed from component state follows that
+/// state live, in place, without rebuilding the window. A window whose root
+/// declares no title keeps its launch title from [`WindowSpec`].
+///
+/// # Safety
+///
+/// `window` must be a live NSWindow used on AppKit's main thread.
+unsafe fn apply_declared_window_title(window: &AnyObject, bindings: &WindowBindings) {
+    let Some(declared) = bindings.declared_title() else {
+        return;
+    };
+    // SAFETY: title is a main-thread read of the live window; comparing
+    // first keeps no-op reconciles from touching the native title at all.
+    let current = unsafe {
+        let title: *mut AnyObject = msg_send![window, title];
+        rust_string(title)
+    };
+    if current != declared {
+        set_string(window, SET_TITLE, &declared);
     }
 }
 

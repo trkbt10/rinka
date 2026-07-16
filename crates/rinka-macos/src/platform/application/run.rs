@@ -28,9 +28,22 @@ pub fn run(application: ApplicationSpec) {
 mod tests {
     use super::{
         DiagnosticAppearance, TRANSITION_PROBE_STEPS, TransitionProbeAction,
-        parse_diagnostic_appearance, should_install_toolbar,
+        parse_diagnostic_appearance, should_install_toolbar, terminate_after_last_window,
     };
-    use rinka_core::{PanelBehavior, WindowKind};
+    use rinka_core::{LastWindowClosedPolicy, PanelBehavior, WindowKind};
+
+    #[test]
+    fn the_last_window_policy_maps_onto_the_appkit_terminate_decision() {
+        // The AppKit convention keeps the application running, so only the
+        // explicit Exit declaration terminates after the last window.
+        assert!(!terminate_after_last_window(
+            LastWindowClosedPolicy::PlatformDefault
+        ));
+        assert!(!terminate_after_last_window(
+            LastWindowClosedPolicy::StayRunning
+        ));
+        assert!(terminate_after_last_window(LastWindowClosedPolicy::Exit));
+    }
 
     #[test]
     fn workspace_split_controls_install_a_toolbar_without_custom_items() {

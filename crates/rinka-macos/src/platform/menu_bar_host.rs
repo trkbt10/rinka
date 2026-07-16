@@ -84,6 +84,11 @@ impl MenuBarHost {
         self.0.router.borrow_mut().register_window(id, bindings);
     }
 
+    /// Removes one closed window's slot from the router.
+    fn unregister_window(&self, id: &WindowId) {
+        self.0.router.borrow_mut().unregister_window(id);
+    }
+
     /// Resolves the key window's declarative identity through the delegate's
     /// pointer registry.
     fn key_window_id(&self) -> Option<WindowId> {

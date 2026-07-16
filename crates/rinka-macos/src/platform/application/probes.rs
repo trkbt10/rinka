@@ -1,6 +1,7 @@
 struct ApplicationDelegateIvars {
     application: RefCell<Option<ApplicationSpec>>,
     transition_sizes: Option<(Size, Size)>,
+    last_window_closed: LastWindowClosedPolicy,
     windows: RefCell<Vec<Id>>,
     window_initial_sizes: RefCell<Vec<Size>>,
     window_initial_extent_constraints: RefCell<Vec<Vec<Id>>>,
@@ -14,6 +15,12 @@ struct ApplicationDelegateIvars {
     window_identities: WindowIdentityRegistry,
     menu_bar_host: MenuBarHost,
     key_monitor: RefCell<Option<Id>>,
+    /// Identities whose user-gesture close is deferred, awaiting the
+    /// component's confirm or veto — the pending-close tokens.
+    pending_closes: RefCell<Vec<WindowId>>,
+    /// Native objects of closed windows, retained until the next main-loop
+    /// turn so AppKit finishes unwinding the close before anything releases.
+    closing_relics: RefCell<Vec<ClosingWindowRelics>>,
     transition_probe: RefCell<Option<TransitionProbe>>,
     scene_probe: RefCell<Option<SceneProbe>>,
     accelerator_probe: RefCell<Option<AcceleratorProbe>>,
@@ -22,6 +29,20 @@ struct ApplicationDelegateIvars {
     dialog_probe: RefCell<Option<DialogProbe>>,
     text_input_probe: RefCell<Option<TextInputProbe>>,
     menu_bar_probe: RefCell<Option<MenuBarProbe>>,
+}
+
+/// Everything a closed window still owns natively.
+///
+/// `windowWillClose:` runs while AppKit is mid-teardown of the window, so
+/// releasing the retained NSWindow, its runtime's view tree, or its toolbar
+/// delegate inside that callback would pull objects out from under the
+/// framework. The relics are parked here and released one turn later.
+struct ClosingWindowRelics {
+    _window: Id,
+    _runtime: WindowRuntime<AppKitBackend>,
+    _toolbar_delegate: Retained<ToolbarDelegate>,
+    _list_registry: ListRegistry,
+    _extent_constraints: Vec<Id>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -304,7 +325,7 @@ define_class!(
 
         #[unsafe(method(applicationShouldTerminateAfterLastWindowClosed:))]
         fn should_terminate_after_last_window(&self, _application: &AnyObject) -> bool {
-            true
+            terminate_after_last_window(self.ivars().last_window_closed)
         }
 
         #[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
@@ -423,11 +444,168 @@ define_class!(
         }
 
         #[unsafe(method(windowDidBecomeKey:))]
-        fn window_did_become_key(&self, _notification: &AnyObject) {
+        fn window_did_become_key(&self, notification: &AnyObject) {
             // The effective menu bar follows the key window: focus switches
             // swap (or refresh) the installed declaration so menu commands
             // route to the newly focused window's component.
             self.ivars().menu_bar_host.refresh();
+            // SAFETY: The notification carries the key NSWindow as its
+            // object and is delivered on the main thread.
+            let window: *mut AnyObject = unsafe { msg_send![notification, object] };
+            if let Some(window) = NonNull::new(window) {
+                // SAFETY: The pointer is the live window from the
+                // notification, read on the main thread.
+                unsafe {
+                    self.dispatch_window_event(window.as_ref(), WindowEvent::Focused);
+                }
+            }
+        }
+
+        #[unsafe(method(windowDidResignKey:))]
+        fn window_did_resign_key(&self, notification: &AnyObject) {
+            // SAFETY: The notification carries the resigning NSWindow as its
+            // object and is delivered on the main thread.
+            let window: *mut AnyObject = unsafe { msg_send![notification, object] };
+            if let Some(window) = NonNull::new(window) {
+                // SAFETY: The pointer is the live window from the
+                // notification, read on the main thread.
+                unsafe {
+                    self.dispatch_window_event(window.as_ref(), WindowEvent::Resigned);
+                }
+            }
+        }
+
+        #[unsafe(method(windowDidMove:))]
+        fn window_did_move(&self, notification: &AnyObject) {
+            // SAFETY: The notification carries the moved NSWindow as its
+            // object; the frame origin is AppKit's bottom-left-origin global
+            // screen coordinate, delivered as-is per the WindowPosition
+            // contract.
+            unsafe {
+                let window: *mut AnyObject = msg_send![notification, object];
+                let Some(window) = NonNull::new(window) else {
+                    return;
+                };
+                let frame: Rect = msg_send![window.as_ref(), frame];
+                self.dispatch_window_event(
+                    window.as_ref(),
+                    WindowEvent::Moved(WindowPosition::new(frame.origin.x, frame.origin.y)),
+                );
+            }
+        }
+
+        #[unsafe(method(windowShouldClose:))]
+        fn window_should_close(&self, sender: &AnyObject) -> bool {
+            self.native_close_may_proceed(sender)
+        }
+
+        #[unsafe(method(deliverCloseRequest:))]
+        fn deliver_close_request(&self, sender: *mut AnyObject) {
+            let Some(window) = NonNull::new(sender) else {
+                return;
+            };
+            // SAFETY: The retained window pointer from the deferred perform
+            // is used on the main thread.
+            let window = unsafe { window.as_ref() };
+            let Some(id) = self.window_declared_id(window) else {
+                // The window was closed (programmatically) before delivery;
+                // its token is already cleared.
+                return;
+            };
+            if !self.ivars().pending_closes.borrow().contains(&id) {
+                return;
+            }
+            let Some(bindings) = self.window_bindings_for(window) else {
+                return;
+            };
+            if !bindings.declares_close_request() {
+                // The declaration was withdrawn between the gesture and its
+                // delivery: the user asked to close and the application no
+                // longer intercepts, so honor the gesture natively.
+                self.ivars().pending_closes.borrow_mut().retain(|pending| pending != &id);
+                // SAFETY: close is the unconditional NSWindow teardown on
+                // the main thread; windowWillClose: performs the unhosting.
+                unsafe {
+                    let _: () = msg_send![window, close];
+                }
+                return;
+            }
+            bindings.dispatch_close_request();
+        }
+
+        #[unsafe(method(windowWillClose:))]
+        fn window_will_close(&self, notification: &AnyObject) {
+            // SAFETY: The notification carries the closing NSWindow as its
+            // object and is delivered on the main thread.
+            let window: *mut AnyObject = unsafe { msg_send![notification, object] };
+            let Some(window) = NonNull::new(window) else {
+                return;
+            };
+            // SAFETY: The pointer is the live window from the notification.
+            let index = unsafe { self.window_index(window.as_ref()) };
+            let Some(index) = index else {
+                // Sheets and panels this delegate never built also close.
+                return;
+            };
+            self.unhost_window_at(index);
+        }
+
+        #[unsafe(method(releaseClosedWindows:))]
+        fn release_closed_windows(&self, _sender: *mut AnyObject) {
+            // One turn after windowWillClose:, AppKit has finished with the
+            // closed window; releasing the relics now is safe.
+            self.ivars().closing_relics.borrow_mut().clear();
+        }
+
+        #[unsafe(method(refreshRuntimeWindowLayout:))]
+        fn refresh_runtime_window_layout(&self, sender: *mut AnyObject) {
+            // The single-window twin of refreshInitialLayout:, run one turn
+            // after a runtime open so the new content settles without
+            // re-asserting the initial extents of user-resized siblings.
+            let Some(window) = NonNull::new(sender) else {
+                return;
+            };
+            // SAFETY: The deferred perform retained the just-opened window;
+            // layout and geometry run on the main thread.
+            let index = unsafe { self.window_index(window.as_ref()) };
+            let Some(index) = index else {
+                // Closed again before the layout pass arrived.
+                return;
+            };
+            {
+                let renderers = self.ivars().renderers.borrow();
+                if let Some(runtime) = renderers.get(index) {
+                    runtime.with_renderer(|renderer| {
+                        if let Some(root) = renderer.mounted() {
+                            refresh_mounted_stacks(root);
+                        }
+                    });
+                }
+            }
+            // SAFETY: Content layout over the retained window's live views.
+            unsafe {
+                let content: *mut AnyObject = msg_send![window.as_ref(), contentView];
+                if let Some(content) = NonNull::new(content) {
+                    let _: () = msg_send![content.as_ref(), layoutSubtreeIfNeeded];
+                    layout_scroll_documents(content.as_ref());
+                    let _: () = msg_send![content.as_ref(), layoutSubtreeIfNeeded];
+                }
+            }
+            let initial_size = self
+                .ivars()
+                .window_initial_sizes
+                .borrow()
+                .get(index)
+                .copied();
+            if let Some(initial_size) = initial_size {
+                // SAFETY: Reassert the declarative extent after native
+                // controllers resolved their fitting sizes, exactly as the
+                // launch path does for the initial set.
+                unsafe {
+                    self.set_window_content_extent(window.as_ref(), initial_size);
+                    let _: () = msg_send![window.as_ref(), setContentSize: initial_size];
+                }
+            }
         }
 
         #[unsafe(method(windowDidResize:))]
@@ -449,6 +627,24 @@ define_class!(
             }
             let list_handles = registered_list_handles(&self.ivars().list_registries);
             refresh_all_semantic_sidebar_content_fit(&list_handles);
+            // SAFETY: The lifecycle event carries the settled content
+            // extent, read from the live window on the main thread after
+            // layout completed.
+            unsafe {
+                let window: *mut AnyObject = msg_send![notification, object];
+                let Some(window) = NonNull::new(window) else {
+                    return;
+                };
+                let frame: Rect = msg_send![window.as_ref(), frame];
+                let content: Rect = msg_send![window.as_ref(), contentRectForFrameRect: frame];
+                self.dispatch_window_event(
+                    window.as_ref(),
+                    WindowEvent::Resized(LogicalSize::new(
+                        content.size.width,
+                        content.size.height,
+                    )),
+                );
+            }
         }
 
         #[unsafe(method(windowWillResize:toSize:))]

@@ -12,6 +12,7 @@ impl ApplicationDelegate {
                 },
             )
         });
+        let last_window_closed = application.last_window_closed;
         let window_identities: WindowIdentityRegistry = Rc::new(RefCell::new(Vec::new()));
         let menu_bar_host = MenuBarHost::new(
             mtm,
@@ -22,6 +23,7 @@ impl ApplicationDelegate {
         let object = Self::alloc(mtm).set_ivars(ApplicationDelegateIvars {
             application: RefCell::new(Some(application)),
             transition_sizes,
+            last_window_closed,
             windows: RefCell::new(Vec::new()),
             window_initial_sizes: RefCell::new(Vec::new()),
             window_initial_extent_constraints: RefCell::new(Vec::new()),
@@ -35,6 +37,8 @@ impl ApplicationDelegate {
             window_identities,
             menu_bar_host,
             key_monitor: RefCell::new(None),
+            pending_closes: RefCell::new(Vec::new()),
+            closing_relics: RefCell::new(Vec::new()),
             transition_probe: RefCell::new(None),
             scene_probe: RefCell::new(None),
             accelerator_probe: RefCell::new(None),
@@ -103,81 +107,24 @@ impl ApplicationDelegate {
         let mut key_window = None;
         for window in application.windows {
             let is_primary = matches!(window.kind, WindowKind::Main | WindowKind::Preferences);
-            let initial_size = Size {
-                width: window.initial_size.width,
-                height: window.initial_size.height,
-            };
             match build_window(
                 self.mtm(),
                 &window,
                 self.ivars().split_restore_pending.clone(),
+                AppKitWindowService::new(self),
             ) {
-                Ok((
-                    native_window,
-                    renderer,
-                    toolbar_delegate,
-                    list_registry,
-                    initial_extent_constraints,
-                )) => {
+                Ok(built) => {
                     if let Some(requested) = diagnostic_appearance {
                         // SAFETY: The retained object is the NSWindow or NSPanel
                         // just built on AppKit's main thread.
                         unsafe {
-                            assert_diagnostic_appearance(native_window.as_object(), requested);
+                            assert_diagnostic_appearance(built.0.as_object(), requested);
                         }
                     }
-                    // SAFETY: NSWindow's delegate is weak. The application
-                    // retains this delegate for the complete event loop.
-                    unsafe {
-                        let _: () = msg_send![native_window.as_object(), setDelegate: &**self];
-                    }
+                    let native_window = self.attach_window(&window, built);
                     if is_primary && key_window.is_none() {
-                        key_window = Some(native_window.clone());
+                        key_window = Some(native_window);
                     }
-                    // The renderer owns one stable accelerator table for the
-                    // window's lifetime; registering it here connects the
-                    // application key monitor exactly once per window while
-                    // reconciliation keeps replacing the entries in place.
-                    let accelerator_bindings = renderer
-                        .with_renderer(|renderer| renderer.accelerator_bindings().clone());
-                    self.ivars()
-                        .accelerator_router
-                        .borrow_mut()
-                        .register_window(window.id.clone(), accelerator_bindings);
-                    // The same discipline serves the menu bar: one stable
-                    // slot per window, replaced in place on every render,
-                    // and a per-window reconciled hook so the installed
-                    // NSMenu reflects the freshest declaration.
-                    let menu_bar_bindings =
-                        renderer.with_renderer(|renderer| renderer.menu_bar_bindings().clone());
-                    self.ivars()
-                        .menu_bar_host
-                        .register_window(window.id.clone(), menu_bar_bindings);
-                    let menu_bar_host = self.ivars().menu_bar_host.clone();
-                    renderer.set_reconciled_handler(move || menu_bar_host.refresh());
-                    self.ivars()
-                        .window_identities
-                        .borrow_mut()
-                        .push((native_window.as_ptr() as usize, window.id.clone()));
-                    self.ivars()
-                        .list_registries
-                        .borrow_mut()
-                        .push(list_registry);
-                    self.ivars()
-                        .toolbar_delegates
-                        .borrow_mut()
-                        .push(toolbar_delegate);
-                    self.ivars().renderers.borrow_mut().push(renderer);
-                    self.ivars()
-                        .window_initial_sizes
-                        .borrow_mut()
-                        .push(initial_size);
-                    self.ivars()
-                        .window_initial_extent_constraints
-                        .borrow_mut()
-                        .push(initial_extent_constraints);
-                    self.ivars().split_window_frames.borrow_mut().push(None);
-                    self.ivars().windows.borrow_mut().push(native_window);
                 }
                 Err(error) => eprintln!("AppKit host error: {error}"),
             }
@@ -226,6 +173,382 @@ impl ApplicationDelegate {
                 afterDelay: 0.0_f64
             ];
         }
+    }
+
+    /// Registers one built native window with every host registry: the
+    /// window delegate, the accelerator and menu-bar routers, the identity
+    /// map, and the index-aligned per-window vectors. Launch windows and
+    /// runtime-opened windows share this exact wiring.
+    fn attach_window(&self, spec: &WindowSpec, built: BuiltWindow) -> Id {
+        let (native_window, renderer, toolbar_delegate, list_registry, initial_extent_constraints) =
+            built;
+        // SAFETY: NSWindow's delegate is weak. The application retains this
+        // delegate for the complete event loop.
+        unsafe {
+            let _: () = msg_send![native_window.as_object(), setDelegate: &**self];
+        }
+        // The renderer owns one stable accelerator table for the window's
+        // lifetime; registering it here connects the application key monitor
+        // exactly once per window while reconciliation keeps replacing the
+        // entries in place.
+        let accelerator_bindings =
+            renderer.with_renderer(|renderer| renderer.accelerator_bindings().clone());
+        self.ivars()
+            .accelerator_router
+            .borrow_mut()
+            .register_window(spec.id.clone(), accelerator_bindings);
+        // The same discipline serves the menu bar and the root's window
+        // declaration: one stable slot per window, replaced in place on
+        // every render, and a per-window reconciled hook applying the
+        // freshest declared title and installed NSMenu.
+        let menu_bar_bindings =
+            renderer.with_renderer(|renderer| renderer.menu_bar_bindings().clone());
+        self.ivars()
+            .menu_bar_host
+            .register_window(spec.id.clone(), menu_bar_bindings);
+        let window_bindings = renderer.with_renderer(|renderer| renderer.window_bindings().clone());
+        let menu_bar_host = self.ivars().menu_bar_host.clone();
+        let reconciled_window = native_window.clone();
+        let reconciled_bindings = window_bindings.clone();
+        renderer.set_reconciled_handler(move || {
+            // SAFETY: The closure retains the native window, and every
+            // reconciliation runs on AppKit's main thread.
+            unsafe {
+                apply_declared_window_title(reconciled_window.as_object(), &reconciled_bindings);
+            }
+            menu_bar_host.refresh();
+        });
+        // The launch title yields to a title declared by the first render.
+        // SAFETY: The retained window is titled on the main thread.
+        unsafe {
+            apply_declared_window_title(native_window.as_object(), &window_bindings);
+        }
+        let initial_size = Size {
+            width: spec.initial_size.width,
+            height: spec.initial_size.height,
+        };
+        self.ivars()
+            .window_identities
+            .borrow_mut()
+            .push((native_window.as_ptr() as usize, spec.id.clone()));
+        self.ivars().list_registries.borrow_mut().push(list_registry);
+        self.ivars()
+            .toolbar_delegates
+            .borrow_mut()
+            .push(toolbar_delegate);
+        self.ivars().renderers.borrow_mut().push(renderer);
+        self.ivars()
+            .window_initial_sizes
+            .borrow_mut()
+            .push(initial_size);
+        self.ivars()
+            .window_initial_extent_constraints
+            .borrow_mut()
+            .push(initial_extent_constraints);
+        self.ivars().split_window_frames.borrow_mut().push(None);
+        self.ivars()
+            .windows
+            .borrow_mut()
+            .push(native_window.clone());
+        native_window
+    }
+
+    /// Removes one closed window from every registry.
+    ///
+    /// The per-window vectors were pushed together in
+    /// [`Self::attach_window`] and stay index-aligned, so the same index is
+    /// removed from each. The native objects are parked as relics and
+    /// released one main-loop turn later (`releaseClosedWindows:`), because
+    /// `windowWillClose:` runs while AppKit is still unwinding the close.
+    fn unhost_window_at(&self, index: usize) {
+        let native_window = self.ivars().windows.borrow_mut().remove(index);
+        let runtime = self.ivars().renderers.borrow_mut().remove(index);
+        let toolbar_delegate = self.ivars().toolbar_delegates.borrow_mut().remove(index);
+        let list_registry = self.ivars().list_registries.borrow_mut().remove(index);
+        self.ivars().window_initial_sizes.borrow_mut().remove(index);
+        let extent_constraints = self
+            .ivars()
+            .window_initial_extent_constraints
+            .borrow_mut()
+            .remove(index);
+        self.ivars().split_window_frames.borrow_mut().remove(index);
+        let pointer = native_window.as_ptr() as usize;
+        let id = {
+            let mut identities = self.ivars().window_identities.borrow_mut();
+            let id = identities
+                .iter()
+                .find_map(|(candidate, id)| (*candidate == pointer).then(|| id.clone()));
+            identities.retain(|(candidate, _)| *candidate != pointer);
+            id
+        };
+        if let Some(id) = &id {
+            self.ivars()
+                .accelerator_router
+                .borrow_mut()
+                .unregister_window(id);
+            self.ivars().menu_bar_host.unregister_window(id);
+            self.ivars()
+                .pending_closes
+                .borrow_mut()
+                .retain(|pending| pending != id);
+        }
+        self.ivars()
+            .closing_relics
+            .borrow_mut()
+            .push(ClosingWindowRelics {
+                _window: native_window,
+                _runtime: runtime,
+                _toolbar_delegate: toolbar_delegate,
+                _list_registry: list_registry,
+                _extent_constraints: extent_constraints,
+            });
+        // The closed window may have owned the effective menu bar.
+        self.ivars().menu_bar_host.refresh();
+        // SAFETY: The delayed perform releases the relics one turn later,
+        // after AppKit has finished the close it is delivering now.
+        unsafe {
+            let _: () = msg_send![self,
+                performSelector: sel!(releaseClosedWindows:),
+                withObject: std::ptr::null::<AnyObject>(),
+                afterDelay: 0.0_f64
+            ];
+        }
+    }
+
+    /// Resolves a native window to its declared identity.
+    fn window_declared_id(&self, window: &AnyObject) -> Option<WindowId> {
+        let pointer = std::ptr::from_ref(window) as usize;
+        self.ivars()
+            .window_identities
+            .borrow()
+            .iter()
+            .find_map(|(candidate, id)| (*candidate == pointer).then(|| id.clone()))
+    }
+
+    /// Returns the retained native window realized for one identity.
+    fn native_window_for(&self, id: &WindowId) -> Option<Id> {
+        let pointer = self
+            .ivars()
+            .window_identities
+            .borrow()
+            .iter()
+            .find_map(|(pointer, candidate)| (candidate == id).then_some(*pointer))?;
+        self.ivars()
+            .windows
+            .borrow()
+            .iter()
+            .find(|window| window.as_ptr() as usize == pointer)
+            .cloned()
+    }
+
+    /// Clones one window's stable declaration slot.
+    fn window_bindings_for(&self, window: &AnyObject) -> Option<WindowBindings> {
+        let index = self.window_index(window)?;
+        let renderers = self.ivars().renderers.borrow();
+        renderers
+            .get(index)
+            .map(|runtime| runtime.with_renderer(|renderer| renderer.window_bindings().clone()))
+    }
+
+    /// Delivers one lifecycle event through the owning window's declaration.
+    ///
+    /// The bindings are cloned out and every registry borrow released before
+    /// the handler runs: the component's update may open or close windows,
+    /// which mutates the registries this method reads.
+    fn dispatch_window_event(&self, window: &AnyObject, event: WindowEvent) {
+        let Some(bindings) = self.window_bindings_for(window) else {
+            return;
+        };
+        bindings.dispatch_event(event);
+    }
+
+    /// Realizes one new window at runtime; the [`WindowService`] open path.
+    fn open_runtime_window(&self, spec: WindowSpec) -> Result<(), WindowError> {
+        if self
+            .ivars()
+            .window_identities
+            .borrow()
+            .iter()
+            .any(|(_, id)| *id == spec.id)
+        {
+            return Err(WindowError::AlreadyOpen { id: spec.id });
+        }
+        let built = build_window(
+            self.mtm(),
+            &spec,
+            self.ivars().split_restore_pending.clone(),
+            AppKitWindowService::new(self),
+        )
+        .map_err(|error| WindowError::Host {
+            reason: error.to_string(),
+        })?;
+        let native_window = self.attach_window(&spec, built);
+        // SAFETY: The new window takes key focus like a native document
+        // window, and the delayed pass settles its layout exactly as the
+        // launch path settles the initial set — scoped to this one window so
+        // runtime opens never disturb user-resized siblings.
+        unsafe {
+            let _: () = msg_send![
+                native_window.as_object(),
+                makeKeyAndOrderFront: std::ptr::null::<AnyObject>()
+            ];
+            let _: () = msg_send![self,
+                performSelector: sel!(refreshRuntimeWindowLayout:),
+                withObject: native_window.as_object(),
+                afterDelay: 0.0_f64
+            ];
+        }
+        Ok(())
+    }
+
+    /// Closes one window unconditionally; the [`WindowService`] close path.
+    fn close_runtime_window(&self, id: &WindowId) -> Result<(), WindowError> {
+        let Some(window) = self.native_window_for(id) else {
+            return Err(WindowError::NotOpen { id: id.clone() });
+        };
+        // A programmatic close is a component decision: it never consults
+        // the close-request handler, and any pending token is cleared
+        // unanswered.
+        self.ivars()
+            .pending_closes
+            .borrow_mut()
+            .retain(|pending| pending != id);
+        // SAFETY: close (never performClose:) skips windowShouldClose: on
+        // the main thread; windowWillClose: performs the unhosting.
+        unsafe {
+            let _: () = msg_send![window.as_object(), close];
+        }
+        Ok(())
+    }
+
+    /// Focuses one window; the [`WindowService`] focus path.
+    fn focus_runtime_window(&self, id: &WindowId) -> Result<(), WindowError> {
+        let Some(window) = self.native_window_for(id) else {
+            return Err(WindowError::NotOpen { id: id.clone() });
+        };
+        // SAFETY: makeKeyAndOrderFront over the retained window on the main
+        // thread; windowDidBecomeKey:/windowDidResignKey: deliver the
+        // lifecycle events.
+        unsafe {
+            let _: () = msg_send![
+                window.as_object(),
+                makeKeyAndOrderFront: std::ptr::null::<AnyObject>()
+            ];
+        }
+        Ok(())
+    }
+
+    /// Applies a one-shot content extent; the [`WindowService`] size path.
+    fn set_runtime_window_content_size(
+        &self,
+        id: &WindowId,
+        size: LogicalSize,
+    ) -> Result<(), WindowError> {
+        let Some(window) = self.native_window_for(id) else {
+            return Err(WindowError::NotOpen { id: id.clone() });
+        };
+        let native_size = Size {
+            width: size.width,
+            height: size.height,
+        };
+        // SAFETY: The retained extent constraints and the native content
+        // size are updated together, exactly as the interactive resize path
+        // does; windowDidResize: then delivers the lifecycle event.
+        unsafe {
+            self.set_window_content_extent(window.as_object(), native_size);
+            let _: () = msg_send![window.as_object(), setContentSize: native_size];
+        }
+        Ok(())
+    }
+
+    /// Applies a one-shot frame origin; the [`WindowService`] position path.
+    fn set_runtime_window_position(
+        &self,
+        id: &WindowId,
+        position: WindowPosition,
+    ) -> Result<(), WindowError> {
+        let Some(window) = self.native_window_for(id) else {
+            return Err(WindowError::NotOpen { id: id.clone() });
+        };
+        // SAFETY: setFrameOrigin places the retained window in AppKit's
+        // bottom-left-origin global screen space — the coordinate space
+        // WindowPosition documents; windowDidMove: delivers the event.
+        unsafe {
+            let _: () = msg_send![window.as_object(), setFrameOrigin: Point {
+                x: position.x,
+                y: position.y,
+            }];
+        }
+        Ok(())
+    }
+
+    /// Consumes the pending token and performs the deferred close; the
+    /// [`WindowService`] confirm path.
+    fn confirm_runtime_window_close(&self, id: &WindowId) -> Result<(), WindowError> {
+        let Some(window) = self.native_window_for(id) else {
+            return Err(WindowError::NotOpen { id: id.clone() });
+        };
+        self.take_pending_close(id)?;
+        // SAFETY: The deferred user close completes with the unconditional
+        // close on the main thread; windowWillClose: performs the unhosting.
+        unsafe {
+            let _: () = msg_send![window.as_object(), close];
+        }
+        Ok(())
+    }
+
+    /// Consumes the pending token and keeps the window open; the
+    /// [`WindowService`] veto path.
+    fn veto_runtime_window_close(&self, id: &WindowId) -> Result<(), WindowError> {
+        if self.native_window_for(id).is_none() {
+            return Err(WindowError::NotOpen { id: id.clone() });
+        }
+        self.take_pending_close(id)
+    }
+
+    /// Answers `windowShouldClose:`: whether a user-gesture close proceeds
+    /// natively, or is deferred behind a pending-close token.
+    ///
+    /// Windows without a declared close-request handler close natively;
+    /// declaring one makes the gesture a deferred component message. A
+    /// second gesture while a token is pending is absorbed — the open
+    /// request stands and no second message is delivered.
+    fn native_close_may_proceed(&self, sender: &AnyObject) -> bool {
+        let Some(id) = self.window_declared_id(sender) else {
+            return true;
+        };
+        let Some(bindings) = self.window_bindings_for(sender) else {
+            return true;
+        };
+        if !bindings.declares_close_request() {
+            return true;
+        }
+        if self.ivars().pending_closes.borrow().contains(&id) {
+            return false;
+        }
+        self.ivars().pending_closes.borrow_mut().push(id);
+        // Deliver on the next main-loop turn: the component's answer may
+        // close this very window, which must not happen while AppKit's
+        // performClose: is still walking it beneath this callback.
+        // SAFETY: The delegate and the sender window are retained for the
+        // duration of the delayed perform.
+        unsafe {
+            let _: () = msg_send![self,
+                performSelector: sel!(deliverCloseRequest:),
+                withObject: sender,
+                afterDelay: 0.0_f64
+            ];
+        }
+        false
+    }
+
+    fn take_pending_close(&self, id: &WindowId) -> Result<(), WindowError> {
+        let mut pending = self.ivars().pending_closes.borrow_mut();
+        let Some(index) = pending.iter().position(|pending| pending == id) else {
+            return Err(WindowError::NoPendingClose { id: id.clone() });
+        };
+        pending.remove(index);
+        Ok(())
     }
 
     fn begin_scene_probe(&self) {

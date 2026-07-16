@@ -10,6 +10,7 @@ include!("application/menu_bar_probe.rs");
 include!("application/delegate.rs");
 include!("application/textarea_probe.rs");
 include!("application/window_host.rs");
+include!("application/window_service_host.rs");
 include!("application/dialog_host.rs");
 include!("application/dialog_probe.rs");
 include!("application/run.rs");
