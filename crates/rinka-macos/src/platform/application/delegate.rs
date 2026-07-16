@@ -32,6 +32,7 @@ impl ApplicationDelegate {
             accelerator_probe: RefCell::new(None),
             clipboard_probe: RefCell::new(None),
             text_area_probe: RefCell::new(None),
+            dialog_probe: RefCell::new(None),
         });
         // SAFETY: NSObject's init signature and ownership convention are stable.
         unsafe { msg_send![super(object), init] }
@@ -123,6 +124,10 @@ impl ApplicationDelegate {
                     if is_primary && key_window.is_none() {
                         key_window = Some(native_window.clone());
                     }
+                    // Dialog requests raised by this window's component are
+                    // presented as sheets on this window (window-modal, never
+                    // app-modal).
+                    install_dialog_presenter(&native_window, &renderer);
                     // The renderer owns one stable accelerator table for the
                     // window's lifetime; registering it here connects the
                     // application key monitor exactly once per window while

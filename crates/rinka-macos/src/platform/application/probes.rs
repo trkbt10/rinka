@@ -18,6 +18,7 @@ struct ApplicationDelegateIvars {
     accelerator_probe: RefCell<Option<AcceleratorProbe>>,
     clipboard_probe: RefCell<Option<ClipboardProbe>>,
     text_area_probe: RefCell<Option<TextAreaProbe>>,
+    dialog_probe: RefCell<Option<DialogProbe>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -32,6 +33,13 @@ struct AcceleratorProbe {
 /// status note, while the wrapping script owns the cross-process assertions.
 #[derive(Clone, Copy, Debug)]
 struct ClipboardProbe {
+    step: usize,
+    attempts: usize,
+    passed: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DialogProbe {
     step: usize,
     attempts: usize,
     passed: bool,
@@ -339,6 +347,7 @@ define_class!(
             self.begin_context_menu_probe();
             self.begin_clipboard_probe();
             self.begin_text_area_probe();
+            self.begin_dialog_probe();
         }
 
         #[unsafe(method(runTransitionProbe:))]
@@ -364,6 +373,10 @@ define_class!(
         #[unsafe(method(runTextAreaProbe:))]
         fn run_text_area_probe(&self, _sender: *mut AnyObject) {
             self.advance_text_area_probe();
+
+        #[unsafe(method(runDialogProbe:))]
+        fn run_dialog_probe(&self, _sender: *mut AnyObject) {
+            self.advance_dialog_probe();
         }
 
         #[unsafe(method(windowDidResize:))]
