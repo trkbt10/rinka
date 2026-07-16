@@ -33,6 +33,7 @@ impl ApplicationDelegate {
             clipboard_probe: RefCell::new(None),
             text_area_probe: RefCell::new(None),
             dialog_probe: RefCell::new(None),
+            text_input_probe: RefCell::new(None),
         });
         // SAFETY: NSObject's init signature and ownership convention are stable.
         unsafe { msg_send![super(object), init] }
@@ -769,10 +770,26 @@ impl ApplicationDelegate {
     /// Posts one synthetic key-down through the real event queue so the
     /// local monitor observes it exactly like hardware input.
     fn post_probe_chord(&self, characters: &str, key_code: u16, flags: usize) {
+        self.post_probe_key(characters, characters, key_code, flags, false);
+    }
+
+    /// Posts one synthetic key-down with distinct translated and
+    /// modifier-free character strings and an explicit repeat flag, so the
+    /// text-input probe can replay arrows, control chords, and held keys
+    /// faithfully.
+    fn post_probe_key(
+        &self,
+        characters: &str,
+        characters_ignoring_modifiers: &str,
+        key_code: u16,
+        flags: usize,
+        repeat: bool,
+    ) {
         let Some(window) = self.ivars().windows.borrow().first().cloned() else {
             return;
         };
         let text = ns_string(characters);
+        let unmodified = ns_string(characters_ignoring_modifiers);
         // SAFETY: The retained NSWindow supplies a live window number and the
         // synthesized NSEvent is queued on the main thread; AppKit dequeues
         // it through the normal run-loop dispatch that local monitors hook.
@@ -786,8 +803,8 @@ impl ApplicationDelegate {
                 windowNumber: window_number,
                 context: std::ptr::null::<AnyObject>(),
                 characters: text.as_object(),
-                charactersIgnoringModifiers: text.as_object(),
-                isARepeat: false,
+                charactersIgnoringModifiers: unmodified.as_object(),
+                isARepeat: repeat,
                 keyCode: key_code
             ];
             let application: *mut AnyObject =
@@ -1381,6 +1398,553 @@ impl ApplicationDelegate {
             let application: *mut AnyObject =
                 msg_send![objc2::class!(NSApplication), sharedApplication];
             let _: () = msg_send![application, terminate: std::ptr::null::<AnyObject>()];
+        }
+    }
+
+    fn begin_text_input_probe(&self) {
+        if std::env::var_os("RINKA_APPKIT_TEXT_INPUT_PROBE").is_none()
+            || self.ivars().text_input_probe.borrow().is_some()
+        {
+            return;
+        }
+        for other in [
+            "RINKA_APPKIT_SCENE_PROBE",
+            "RINKA_APPKIT_TRANSITION_PROBE",
+            "RINKA_APPKIT_ACCELERATOR_PROBE",
+            "RINKA_APPKIT_CLIPBOARD_PROBE",
+        ] {
+            if std::env::var_os(other).is_some() {
+                panic!("the text-input probe must run in its own process");
+            }
+        }
+        *self.ivars().text_input_probe.borrow_mut() = Some(TextInputProbe {
+            step: 0,
+            attempts: 0,
+            passed: true,
+            caret_before: None,
+        });
+        self.schedule_text_input_probe();
+    }
+
+    /// Returns the mounted echo canvas's native view.
+    fn probe_canvas_view(&self) -> Option<Id> {
+        let renderers = self.ivars().renderers.borrow();
+        renderers.first().and_then(|runtime| {
+            runtime.with_renderer(|renderer| {
+                renderer
+                    .mounted()
+                    .and_then(|root| mounted_handle_for_key(root, "canvas-surface"))
+                    .map(|handle| handle.0.view.clone())
+            })
+        })
+    }
+
+    /// Reads the explorer's mounted text-input caption, if present.
+    fn probe_input_caption(&self) -> Option<String> {
+        let renderers = self.ivars().renderers.borrow();
+        renderers.first().and_then(|runtime| {
+            runtime.with_renderer(|renderer| {
+                renderer
+                    .mounted()
+                    .and_then(|root| mounted_label_text(root, "canvas-input-caption"))
+            })
+        })
+    }
+
+    /// Sends one primary click through NSWindow sendEvent: at the center of
+    /// the canvas — real hit testing, so click-to-focus is exercised live.
+    fn click_probe_canvas(&self) -> bool {
+        let Some(view) = self.probe_canvas_view() else {
+            return false;
+        };
+        // SAFETY: The mounted view, its window, and NSEvent construction are
+        // used on AppKit's main thread; sendEvent: performs ordinary event
+        // dispatch confined to this application's window.
+        unsafe {
+            let window: *mut AnyObject = msg_send![view.as_object(), window];
+            if window.is_null() {
+                return false;
+            }
+            let bounds: Rect = msg_send![view.as_object(), bounds];
+            let center = Point {
+                x: bounds.origin.x + bounds.size.width / 2.0,
+                y: bounds.origin.y + bounds.size.height / 2.0,
+            };
+            let in_window: Point = msg_send![
+                view.as_object(),
+                convertPoint: center,
+                toView: std::ptr::null::<AnyObject>()
+            ];
+            let window_number: isize = msg_send![window, windowNumber];
+            for event_type in [1_usize, 2_usize] {
+                let event: *mut AnyObject = msg_send![objc2::class!(NSEvent),
+                    mouseEventWithType: event_type,
+                    location: in_window,
+                    modifierFlags: 0_usize,
+                    timestamp: 0.0_f64,
+                    windowNumber: window_number,
+                    context: std::ptr::null::<AnyObject>(),
+                    eventNumber: 0_isize,
+                    clickCount: 1_isize,
+                    pressure: 1.0_f32
+                ];
+                let _: () = msg_send![window, sendEvent: event];
+            }
+            true
+        }
+    }
+
+    /// Calls setMarkedText:selectedRange:replacementRange: directly on the
+    /// canvas — protocol-level composition evidence that stays deterministic
+    /// regardless of which input source the desktop has active.
+    fn set_probe_marked_text(&self, text: &str, selected_location: usize, selected_length: usize) {
+        let Some(view) = self.probe_canvas_view() else {
+            return;
+        };
+        let marked = ns_string(text);
+        // SAFETY: The retained view implements NSTextInputClient; ranges use
+        // UTF-16 units exactly as an input method supplies them.
+        unsafe {
+            let _: () = msg_send![
+                view.as_object(),
+                setMarkedText: marked.as_object(),
+                selectedRange: NSRange::new(selected_location, selected_length),
+                replacementRange: NSRange::new(NSNotFound as usize, 0)
+            ];
+        }
+    }
+
+    /// Calls insertText:replacementRange: directly on the canvas.
+    fn insert_probe_text(&self, text: &str) {
+        let Some(view) = self.probe_canvas_view() else {
+            return;
+        };
+        let inserted = ns_string(text);
+        // SAFETY: The retained view implements NSTextInputClient.
+        unsafe {
+            let _: () = msg_send![
+                view.as_object(),
+                insertText: inserted.as_object(),
+                replacementRange: NSRange::new(NSNotFound as usize, 0)
+            ];
+        }
+    }
+
+    /// Reads the screen rectangle the canvas serves for the IME candidate
+    /// window.
+    fn probe_first_rect(&self) -> Option<Rect> {
+        let view = self.probe_canvas_view()?;
+        // SAFETY: The retained view implements NSTextInputClient; the
+        // actual-range out parameter is optional and passed as null.
+        unsafe {
+            Some(msg_send![
+                view.as_object(),
+                firstRectForCharacterRange: NSRange::new(0, 0),
+                actualRange: std::ptr::null_mut::<NSRange>()
+            ])
+        }
+    }
+
+    fn fail_text_input_probe_step(&self, step: &'static str, detail: &str) {
+        eprintln!("Rinka text-input probe step={step} {detail} pass=false");
+        if let Some(probe) = self.ivars().text_input_probe.borrow_mut().as_mut() {
+            probe.passed = false;
+        }
+        self.finish_text_input_probe();
+    }
+
+    /// Waits until the input caption contains `needle`, retrying across
+    /// main-loop turns; `Some(true)` reports the settled match, `Some(false)`
+    /// the timeout, and `None` requests another turn.
+    fn await_input_caption(&self, step: &'static str, needle: &str) -> Option<bool> {
+        const MAX_MAIN_LOOP_TURNS: usize = 200;
+        let caption = self.probe_input_caption();
+        if caption
+            .as_deref()
+            .is_some_and(|caption| caption.contains(needle))
+        {
+            eprintln!("Rinka text-input probe step={step} expected={needle:?} pass=true");
+            if let Some(probe) = self.ivars().text_input_probe.borrow_mut().as_mut() {
+                probe.attempts = 0;
+            }
+            return Some(true);
+        }
+        let attempts = {
+            let mut probe = self.ivars().text_input_probe.borrow_mut();
+            let probe = probe.as_mut()?;
+            probe.attempts += 1;
+            probe.attempts
+        };
+        if attempts < MAX_MAIN_LOOP_TURNS {
+            return None;
+        }
+        eprintln!(
+            "Rinka text-input probe step={step} expected={needle:?} observed={caption:?} pass=false"
+        );
+        if let Some(probe) = self.ivars().text_input_probe.borrow_mut().as_mut() {
+            probe.passed = false;
+        }
+        Some(false)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn advance_text_input_probe(&self) {
+        const MAX_ACTIVATION_TURNS: usize = 200;
+        /// Turns a withheld chord is given to prove it changes no scene.
+        const WITHHELD_QUIET_TURNS: usize = 4;
+        let Some((step, attempts)) = self
+            .ivars()
+            .text_input_probe
+            .borrow()
+            .as_ref()
+            .map(|probe| (probe.step, probe.attempts))
+        else {
+            return;
+        };
+        let advance = |next_attempts: usize| {
+            if let Some(probe) = self.ivars().text_input_probe.borrow_mut().as_mut() {
+                probe.step += 1;
+                probe.attempts = next_attempts;
+            }
+            self.schedule_text_input_probe();
+        };
+        let retry = || {
+            if let Some(probe) = self.ivars().text_input_probe.borrow_mut().as_mut() {
+                probe.attempts += 1;
+            }
+            self.schedule_text_input_probe();
+        };
+        match step {
+            0 => {
+                // Establish key status, the canvas scene, and click-to-focus.
+                if !self.probe_window_is_key() {
+                    if attempts >= MAX_ACTIVATION_TURNS {
+                        self.fail_text_input_probe_step("initial_scene", "activation_timeout");
+                        return;
+                    }
+                    retry();
+                    return;
+                }
+                if self.observed_probe_scene() != Some("canvas") {
+                    if attempts >= MAX_ACTIVATION_TURNS {
+                        self.fail_text_input_probe_step("initial_scene", "expected_scene=canvas");
+                        return;
+                    }
+                    retry();
+                    return;
+                }
+                eprintln!(
+                    "Rinka text-input probe step=initial_scene observed_scene=canvas pass=true"
+                );
+                if !self.click_probe_canvas() {
+                    self.fail_text_input_probe_step("click_focus", "canvas_not_mounted");
+                    return;
+                }
+                advance(0);
+            }
+            1 => match self.await_input_caption("click_focus", "focused=true") {
+                None => self.schedule_text_input_probe(),
+                Some(false) => self.finish_text_input_probe(),
+                Some(true) => {
+                    let Some(view) = self.probe_canvas_view() else {
+                        self.fail_text_input_probe_step("first_responder", "canvas_not_mounted");
+                        return;
+                    };
+                    // SAFETY: Responder identity, accessibility role, and the
+                    // input context's source are read on the main thread.
+                    let (is_first_responder, role, source) = unsafe {
+                        let window: *mut AnyObject = msg_send![view.as_object(), window];
+                        let responder: *mut AnyObject = msg_send![window, firstResponder];
+                        let role: *mut AnyObject = msg_send![view.as_object(), accessibilityRole];
+                        let context: *mut AnyObject = msg_send![view.as_object(), inputContext];
+                        let source = if context.is_null() {
+                            "no-input-context".to_owned()
+                        } else {
+                            let source: *mut AnyObject =
+                                msg_send![context, selectedKeyboardInputSource];
+                            rust_string(source)
+                        };
+                        (
+                            responder == view.as_ptr(),
+                            rust_string(role),
+                            source,
+                        )
+                    };
+                    let role_passed = role == "AXTextArea";
+                    eprintln!(
+                        "Rinka text-input probe step=first_responder is_first_responder={is_first_responder} role={role} input_source={source} pass={}",
+                        is_first_responder && role_passed
+                    );
+                    if !(is_first_responder && role_passed) {
+                        if let Some(probe) =
+                            self.ivars().text_input_probe.borrow_mut().as_mut()
+                        {
+                            probe.passed = false;
+                        }
+                        self.finish_text_input_probe();
+                        return;
+                    }
+                    // End-to-end typing: one real key-down through the queue.
+                    // The active input source decides whether it inserts text
+                    // (raw path) or begins a composition (composition path);
+                    // both prove keyDown → NSTextInputClient delivery.
+                    self.post_probe_key("h", "h", 4, 0, false);
+                    advance(0);
+                }
+            },
+            2 => {
+                const MAX_MAIN_LOOP_TURNS: usize = 200;
+                let caption = self.probe_input_caption().unwrap_or_default();
+                let raw_path = caption.contains("key=H");
+                let composition_path = !caption.contains("preedit=\"\"");
+                if !(raw_path || composition_path) {
+                    if attempts >= MAX_MAIN_LOOP_TURNS {
+                        self.fail_text_input_probe_step(
+                            "end_to_end_key",
+                            &format!("observed={caption:?}"),
+                        );
+                        return;
+                    }
+                    retry();
+                    return;
+                }
+                eprintln!(
+                    "Rinka text-input probe step=end_to_end_key path={} pass=true",
+                    if raw_path { "raw" } else { "composition" }
+                );
+                // Reset any composition the real input source opened, then
+                // continue with deterministic protocol-level text.
+                self.set_probe_marked_text("", 0, 0);
+                self.insert_probe_text("echo:");
+                advance(0);
+            }
+            3 => match self.await_input_caption("protocol_insert", "echo:") {
+                None => self.schedule_text_input_probe(),
+                Some(false) => self.finish_text_input_probe(),
+                Some(true) => {
+                    let Some(rect) = self.probe_first_rect() else {
+                        self.fail_text_input_probe_step("caret_rect", "canvas_not_mounted");
+                        return;
+                    };
+                    if let Some(probe) = self.ivars().text_input_probe.borrow_mut().as_mut() {
+                        probe.caret_before = Some(rect);
+                    }
+                    self.insert_probe_text("wide");
+                    advance(0);
+                }
+            },
+            4 => match self.await_input_caption("caret_rect_text", "wide") {
+                None => self.schedule_text_input_probe(),
+                Some(false) => self.finish_text_input_probe(),
+                Some(true) => {
+                    let before = self
+                        .ivars()
+                        .text_input_probe
+                        .borrow()
+                        .as_ref()
+                        .and_then(|probe| probe.caret_before);
+                    let (Some(before), Some(after)) = (before, self.probe_first_rect()) else {
+                        self.fail_text_input_probe_step("caret_rect", "rect_unavailable");
+                        return;
+                    };
+                    // The served rectangle advanced with the caret and stays
+                    // inside the window on screen.
+                    let advanced = after.origin.x > before.origin.x;
+                    let contained = self
+                        .ivars()
+                        .windows
+                        .borrow()
+                        .first()
+                        .is_some_and(|window| {
+                            // SAFETY: The retained window's frame is read on
+                            // the main thread; both are screen coordinates.
+                            let frame: Rect = unsafe { msg_send![window.as_object(), frame] };
+                            after.origin.x >= frame.origin.x
+                                && after.origin.x <= frame.origin.x + frame.size.width
+                                && after.origin.y >= frame.origin.y
+                                && after.origin.y <= frame.origin.y + frame.size.height
+                        });
+                    eprintln!(
+                        "Rinka text-input probe step=caret_rect before_x={:.1} after_x={:.1} advanced={advanced} contained={contained} pass={}",
+                        before.origin.x,
+                        after.origin.x,
+                        advanced && contained
+                    );
+                    if !(advanced && contained) {
+                        if let Some(probe) =
+                            self.ivars().text_input_probe.borrow_mut().as_mut()
+                        {
+                            probe.passed = false;
+                        }
+                        self.finish_text_input_probe();
+                        return;
+                    }
+                    // Raw keys the input method passes through untranslated.
+                    self.post_probe_key("\u{f702}", "\u{f702}", 123, 0, false);
+                    advance(0);
+                }
+            },
+            5 => match self.await_input_caption("raw_arrow_key", "key=Left") {
+                None => self.schedule_text_input_probe(),
+                Some(false) => self.finish_text_input_probe(),
+                Some(true) => {
+                    self.post_probe_key("\u{3}", "c", 8, NS_EVENT_MODIFIER_CONTROL, false);
+                    advance(0);
+                }
+            },
+            6 => match self.await_input_caption("raw_control_chord", "key=Control+C") {
+                None => self.schedule_text_input_probe(),
+                Some(false) => self.finish_text_input_probe(),
+                Some(true) => {
+                    self.post_probe_key("\u{f703}", "\u{f703}", 124, 0, true);
+                    advance(0);
+                }
+            },
+            7 => match self.await_input_caption("raw_key_repeat", "key=Right repeat") {
+                None => self.schedule_text_input_probe(),
+                Some(false) => self.finish_text_input_probe(),
+                Some(true) => {
+                    // Scripted composition through the NSTextInputClient
+                    // protocol: begin → update → commit, with the caret in
+                    // UTF-16 units exactly as an input method sends it.
+                    self.set_probe_marked_text("にほんご", 4, 0);
+                    advance(0);
+                }
+            },
+            8 => match self.await_input_caption("ime_preedit", "preedit=\"にほんご\"") {
+                None => self.schedule_text_input_probe(),
+                Some(false) => self.finish_text_input_probe(),
+                Some(true) => {
+                    self.set_probe_marked_text("にほん語", 3, 1);
+                    advance(0);
+                }
+            },
+            9 => match self.await_input_caption("ime_preedit_update", "preedit=\"にほん語\"") {
+                None => self.schedule_text_input_probe(),
+                Some(false) => self.finish_text_input_probe(),
+                Some(true) => {
+                    self.insert_probe_text("日本語");
+                    advance(0);
+                }
+            },
+            10 => match self.await_input_caption("ime_commit", "日本語\" preedit=\"\"") {
+                None => self.schedule_text_input_probe(),
+                Some(false) => self.finish_text_input_probe(),
+                Some(true) => {
+                    self.set_probe_marked_text("かな", 2, 0);
+                    advance(0);
+                }
+            },
+            11 => match self.await_input_caption("ime_cancel_preedit", "preedit=\"かな\"") {
+                None => self.schedule_text_input_probe(),
+                Some(false) => self.finish_text_input_probe(),
+                Some(true) => {
+                    self.set_probe_marked_text("", 0, 0);
+                    advance(0);
+                }
+            },
+            12 => match self.await_input_caption("ime_cancel", "preedit=\"\"") {
+                None => self.schedule_text_input_probe(),
+                Some(false) => self.finish_text_input_probe(),
+                Some(true) => {
+                    let echo_untouched = self
+                        .probe_input_caption()
+                        .is_some_and(|caption| !caption.contains("かな"));
+                    eprintln!(
+                        "Rinka text-input probe step=ime_cancel_left_no_trace pass={echo_untouched}"
+                    );
+                    if !echo_untouched {
+                        if let Some(probe) =
+                            self.ivars().text_input_probe.borrow_mut().as_mut()
+                        {
+                            probe.passed = false;
+                        }
+                        self.finish_text_input_probe();
+                        return;
+                    }
+                    self.capture_windows_to_directory("text-input-");
+                    // Accelerator precedence over the focused canvas: the
+                    // window-scoped Primary+2 must be withheld and fall
+                    // through to the canvas as a raw key.
+                    self.post_probe_key("2", "2", 19, NS_EVENT_MODIFIER_COMMAND, false);
+                    advance(0);
+                }
+            },
+            13 => {
+                if attempts < WITHHELD_QUIET_TURNS {
+                    retry();
+                    return;
+                }
+                let scene_unchanged = self.observed_probe_scene() == Some("canvas");
+                let chord_reached_canvas = self
+                    .probe_input_caption()
+                    .is_some_and(|caption| caption.contains("key=Primary+2"));
+                eprintln!(
+                    "Rinka text-input probe step=withheld_over_canvas scene_unchanged={scene_unchanged} chord_reached_canvas={chord_reached_canvas} pass={}",
+                    scene_unchanged && chord_reached_canvas
+                );
+                if !(scene_unchanged && chord_reached_canvas) {
+                    if let Some(probe) = self.ivars().text_input_probe.borrow_mut().as_mut() {
+                        probe.passed = false;
+                    }
+                    self.finish_text_input_probe();
+                    return;
+                }
+                // The global entry still fires over the focused canvas.
+                self.post_probe_key("1", "1", 18, NS_EVENT_MODIFIER_COMMAND, false);
+                advance(0);
+            }
+            _ => {
+                const MAX_MAIN_LOOP_TURNS: usize = 200;
+                if self.observed_probe_scene() != Some("ready") {
+                    if attempts >= MAX_MAIN_LOOP_TURNS {
+                        self.fail_text_input_probe_step(
+                            "global_over_canvas",
+                            "expected_scene=ready",
+                        );
+                        return;
+                    }
+                    retry();
+                    return;
+                }
+                eprintln!(
+                    "Rinka text-input probe step=global_over_canvas observed_scene=ready pass=true"
+                );
+                self.finish_text_input_probe();
+            }
+        }
+    }
+
+    fn schedule_text_input_probe(&self) {
+        // SAFETY: The next main-loop turn runs after posted events have
+        // dispatched and any resulting reconciliation has completed.
+        unsafe {
+            let _: () = msg_send![self,
+                performSelector: sel!(runTextInputProbe:),
+                withObject: std::ptr::null::<AnyObject>(),
+                afterDelay: 0.05_f64
+            ];
+        }
+    }
+
+    fn finish_text_input_probe(&self) {
+        let passed = self
+            .ivars()
+            .text_input_probe
+            .borrow()
+            .as_ref()
+            .is_some_and(|probe| probe.passed);
+        eprintln!(
+            "Rinka text-input probe result={}",
+            if passed { "PASS" } else { "FAIL" }
+        );
+        if std::env::var_os("RINKA_APPKIT_TEXT_INPUT_PROBE_HOLD").is_none() {
+            // SAFETY: Diagnostic completion terminates only the current test app.
+            unsafe {
+                let application: *mut AnyObject =
+                    msg_send![objc2::class!(NSApplication), sharedApplication];
+                let _: () = msg_send![application, terminate: std::ptr::null::<AnyObject>()];
+            }
         }
     }
 

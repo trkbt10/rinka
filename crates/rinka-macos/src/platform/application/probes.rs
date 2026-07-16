@@ -19,6 +19,7 @@ struct ApplicationDelegateIvars {
     clipboard_probe: RefCell<Option<ClipboardProbe>>,
     text_area_probe: RefCell<Option<TextAreaProbe>>,
     dialog_probe: RefCell<Option<DialogProbe>>,
+    text_input_probe: RefCell<Option<TextInputProbe>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -36,6 +37,21 @@ struct ClipboardProbe {
     step: usize,
     attempts: usize,
     passed: bool,
+}
+
+/// In-process driver for the canvas text-input evidence: it focuses the
+/// explorer's echo canvas, posts real key events through the event queue,
+/// drives the NSTextInputClient protocol directly for deterministic IME
+/// sequences, and asserts the component-observed state from the mounted
+/// caption label.
+#[derive(Clone, Copy, Debug)]
+struct TextInputProbe {
+    step: usize,
+    attempts: usize,
+    passed: bool,
+    /// Caret rectangle captured before more text is inserted, so the probe
+    /// can prove the served firstRectForCharacterRange advances with it.
+    caret_before: Option<Rect>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -349,6 +365,7 @@ define_class!(
             self.begin_text_area_probe();
             self.begin_dialog_probe();
             self.begin_drag_drop_probe();
+            self.begin_text_input_probe();
         }
 
         #[unsafe(method(runTransitionProbe:))]
@@ -379,6 +396,11 @@ define_class!(
         #[unsafe(method(runDialogProbe:))]
         fn run_dialog_probe(&self, _sender: *mut AnyObject) {
             self.advance_dialog_probe();
+        }
+
+        #[unsafe(method(runTextInputProbe:))]
+        fn run_text_input_probe(&self, _sender: *mut AnyObject) {
+            self.advance_text_input_probe();
         }
 
         #[unsafe(method(windowDidResize:))]
