@@ -374,6 +374,33 @@ mod tests {
     }
 
     #[test]
+    fn text_input_canvas_content_is_the_same_typed_unsupported_capability() {
+        // An input-accepting canvas (the terminal text-input host of
+        // reports/canvas-text-input) is rejected through the canvas
+        // capability diagnostic: the WinUI host implements neither the
+        // canvas nor its TSF text-input plumbing, and it must reject the
+        // tree instead of silently dropping the input surface.
+        let mut with_terminal = window("main", WindowKind::Main);
+        with_terminal.content = WindowContent::from(rinka_core::column([rinka_core::canvas(
+            rinka_core::CanvasSize::new(320.0, 240.0),
+            rinka_core::DrawScene::new(),
+            "Terminal",
+        )
+        .accepts_input(true)
+        .ime_caret(rinka_core::CanvasRect::new(0.0, 0.0, 2.0, 16.0))
+        .on_key(|_| {})
+        .on_ime(|_| {})]));
+        let value = application(vec![with_terminal]);
+        assert_eq!(
+            validate_application(&value),
+            Err(WinUiDiagnostic::UnsupportedElementCapability {
+                kind: rinka_core::ElementKind::Canvas,
+                capability: "owned-drawing canvas surface",
+            })
+        );
+    }
+
+    #[test]
     fn bitmap_image_content_is_a_typed_diagnostic() {
         let content = rinka_core::ImageContent::from_rgba8(2, 2, 8, vec![0_u8; 32], 1);
         let mut preview = window("main", WindowKind::Main);

@@ -1,8 +1,10 @@
 //! Deterministic retained-tree adapter used by tests and surface extraction.
 
 mod clipboard;
+mod text_input;
 
 pub use clipboard::FakeClipboard;
+pub use text_input::SyntheticTextInput;
 
 use rinka_core::{
     ContextMenu, DialogDescription, DialogOutcome, DialogRequest, DialogResponder, DialogService,

@@ -20,6 +20,7 @@ mod runtime;
 mod semantics;
 mod services;
 mod text_editing;
+mod text_input;
 mod toolbar;
 mod validation;
 mod window;
@@ -50,8 +51,9 @@ pub use element::{
     progress, row, scroll, separator, spacer, status, text_area, toggle,
 };
 pub use event::{
-    ActivateHandler, EventBindings, FileDropHandler, InputHandler, PayloadDropHandler,
-    PointerHandler, SelectionChangeHandler, SortHandler, TextChangeHandler, ToggleHandler,
+    ActivateHandler, EventBindings, FileDropHandler, FocusHandler, ImeHandler, InputHandler,
+    KeyHandler, PayloadDropHandler, PointerHandler, SelectionChangeHandler, SortHandler,
+    TextChangeHandler, ToggleHandler,
 };
 pub use menu::{ContextMenu, MenuEntry, MenuItem, MenuItemRole, Submenu};
 pub use pattern::{PatternRegion, UiPattern};
@@ -68,6 +70,7 @@ pub use text_editing::{
     HighlightRole, HighlightSpan, HighlightSpans, TextChange, TextContent, TextEdit, TextRange,
     TextRevision, TextSelection, TextSyncAction, char_range_to_byte_range,
 };
+pub use text_input::{ImeEvent, KeyEvent, PreeditCaret};
 pub use toolbar::{
     ToolbarAction, ToolbarChoice, ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem,
     ToolbarItemKind, ToolbarPlacement,

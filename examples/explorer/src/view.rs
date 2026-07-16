@@ -5,13 +5,14 @@ use rinka::{
     Accelerator, Alert, Align, ApplicationSpec, Axis, ButtonRole, CanvasColor, CanvasPoint,
     CanvasRect, CanvasSize, ClipboardError, CollectionPattern, Component, ControlSize,
     DialogButtonRole, DialogOutcome, Dispatch, DragPayload, DrawScene, Element, FileDrop,
-    FilePromise, ImageContent, ImageScaling, Justify, KeyChord, LineWidth, MenuEntry, MenuItem,
-    OpenPanelDescription, PanelBehavior, PointerEvent, PointerPhase, SavePanelDescription, Size,
-    SortDirection, Spacing, StatusTone, Submenu, Symbol, TableColumn, TableSort, TextChange,
-    TextRole, TextSelection, ToolbarAction, ToolbarChoice, ToolbarDisplay, ToolbarGroupDisplay,
-    ToolbarItem, ToolbarPlacement, UiPattern, UpdateContext, WindowContent, WindowId, WindowKind,
-    WindowSpec, button, canvas, column, image, label, list, list_row, mount_pattern, progress, row,
-    separator, spacer, status, text_area, toggle,
+    FilePromise, ImageContent, ImageScaling, ImeEvent, Justify, KeyChord, KeyEvent, KeyIdentity,
+    LineWidth, MenuEntry, MenuItem, OpenPanelDescription, PanelBehavior, PointerEvent,
+    PointerPhase, PreeditCaret, SavePanelDescription, Size, SortDirection, Spacing, StatusTone,
+    Submenu, Symbol, TableColumn, TableSort, TextChange, TextRole, TextSelection, ToolbarAction,
+    ToolbarChoice, ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem, ToolbarPlacement, UiPattern,
+    UpdateContext, WindowContent, WindowId, WindowKind, WindowSpec, button, canvas, column, image,
+    label, list, list_row, mount_pattern, progress, row, separator, spacer, status, text_area,
+    toggle,
 };
 use std::path::PathBuf;
 
@@ -159,6 +160,10 @@ struct ExplorerComponent {
     assets_expanded: bool,
     sort: TableSort,
     canvas_pointer: Option<PointerEvent>,
+    canvas_focused: bool,
+    canvas_echo: String,
+    canvas_preedit: Option<(String, Option<PreeditCaret>)>,
+    canvas_last_key: Option<KeyEvent>,
     preview_bitmaps: Vec<(FileKey, ImageContent)>,
     scaling_probe: ImageContent,
     deleted: Vec<FileKey>,
@@ -197,6 +202,10 @@ impl ExplorerComponent {
                 direction: SortDirection::Ascending,
             },
             canvas_pointer: None,
+            canvas_focused: false,
+            canvas_echo: String::new(),
+            canvas_preedit: None,
+            canvas_last_key: None,
             // Generated once so every reconcile hands the runtime the same
             // shared buffers under the same revision, exercising the
             // "identical revision means no re-upload" contract.
@@ -313,6 +322,9 @@ enum ExplorerMessage {
     UploadsChosen(Vec<PathBuf>),
     RequestDownload(FileKey),
     DownloadTargetChosen(PathBuf),
+    CanvasFocus(bool),
+    CanvasKey(KeyEvent),
+    CanvasIme(ImeEvent),
     RenameFile(FileKey),
     DuplicateFile(FileKey),
     DeleteFile(FileKey),
@@ -368,6 +380,27 @@ impl Component for ExplorerComponent {
                 _ => {}
             },
             ExplorerMessage::CanvasPointer(event) => self.canvas_pointer = Some(event),
+            ExplorerMessage::CanvasFocus(focused) => self.canvas_focused = focused,
+            ExplorerMessage::CanvasKey(event) => {
+                if event.key == Some(KeyIdentity::BACKSPACE) {
+                    self.canvas_echo.pop();
+                } else if let Some(text) = &event.text {
+                    self.canvas_echo.push_str(text);
+                    trim_echo_line(&mut self.canvas_echo);
+                }
+                self.canvas_last_key = Some(event);
+            }
+            ExplorerMessage::CanvasIme(event) => match event {
+                ImeEvent::Preedit { text, caret } => {
+                    self.canvas_preedit = Some((text, caret));
+                }
+                ImeEvent::Commit { text } => {
+                    self.canvas_echo.push_str(&text);
+                    trim_echo_line(&mut self.canvas_echo);
+                    self.canvas_preedit = None;
+                }
+                ImeEvent::Cancel => self.canvas_preedit = None,
+            },
             ExplorerMessage::RenameFile(file) => {
                 self.last_file_action = Some(format!("Rename requested for {}", file_title(file)));
             }
@@ -1132,16 +1165,86 @@ const CANVAS_EXTENT: CanvasSize = CanvasSize::new(
     CANVAS_MARGIN * 2.0 + CANVAS_CELL * CANVAS_GRID_ROWS as f64 + 64.0,
 );
 
+/// Font size of the canvas text-input echo line.
+const ECHO_FONT_SIZE: f64 = 13.0;
+/// Approximate advance of one echoed ASCII glyph. The echo surface only
+/// needs a stable estimate for its caret rectangle and preedit placement;
+/// a real terminal derives exact values from the adapter's
+/// `MonospaceMetrics` instead.
+const ECHO_ASCII_ADVANCE: f64 = ECHO_FONT_SIZE * 0.6;
+/// Approximate advance of one echoed full-width glyph.
+const ECHO_WIDE_ADVANCE: f64 = ECHO_ASCII_ADVANCE * 2.0;
+/// Prompt drawn before the echoed text.
+const ECHO_PROMPT: &str = "> ";
+/// Vertical offset of the echo line below the cell grid.
+const ECHO_LINE_OFFSET: f64 = 34.0;
+/// Widest echo line kept, in characters, so the line stays inside the canvas.
+const ECHO_LINE_CAPACITY: usize = 24;
+
+/// Keeps the newest characters once the echo line reaches its capacity.
+fn trim_echo_line(echo: &mut String) {
+    while echo.chars().count() > ECHO_LINE_CAPACITY {
+        echo.remove(0);
+    }
+}
+
+/// Approximates the advance of echoed text in logical points.
+fn echo_advance(text: &str) -> f64 {
+    text.chars()
+        .map(|character| {
+            if character.is_ascii() {
+                ECHO_ASCII_ADVANCE
+            } else {
+                ECHO_WIDE_ADVANCE
+            }
+        })
+        .sum()
+}
+
+/// Top-left of the echo line inside the canvas.
+fn echo_origin() -> CanvasPoint {
+    CanvasPoint::new(
+        CANVAS_MARGIN,
+        CANVAS_MARGIN + CANVAS_CELL * CANVAS_GRID_ROWS as f64 + ECHO_LINE_OFFSET,
+    )
+}
+
+/// The caret rectangle declared to the platform for candidate-window
+/// anchoring, following the committed text and the preedit caret.
+fn canvas_caret_rect(model: &ExplorerComponent) -> CanvasRect {
+    let origin = echo_origin();
+    let mut x = origin.x + echo_advance(ECHO_PROMPT) + echo_advance(&model.canvas_echo);
+    if let Some((preedit, caret)) = &model.canvas_preedit {
+        let caret_chars = caret.map_or_else(
+            || preedit.chars().count(),
+            |span| span.start.min(preedit.chars().count()),
+        );
+        let before_caret: String = preedit.chars().take(caret_chars).collect();
+        x += echo_advance(&before_caret);
+    }
+    CanvasRect::new(x, origin.y - 2.0, 2.0, ECHO_FONT_SIZE + 6.0)
+}
+
 fn canvas_pane(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) -> Element {
+    let pointer_dispatch = dispatch.clone();
+    let focus_dispatch = dispatch.clone();
+    let key_dispatch = dispatch.clone();
     column([
         row([
             spacer(true, false).with_key("canvas-leading-space"),
             canvas(
                 CANVAS_EXTENT,
-                canvas_test_pattern(model.canvas_pointer),
-                "Canvas test pattern: cell grid, color palette, gauge, and monospace glyph run",
+                canvas_test_pattern(model),
+                "Canvas test pattern: cell grid, color palette, gauge, monospace glyph run, and text-input echo line",
             )
-            .on_pointer(move |event| dispatch.emit(ExplorerMessage::CanvasPointer(event)))
+            .accepts_input(true)
+            .ime_caret(canvas_caret_rect(model))
+            .on_pointer(move |event| pointer_dispatch.emit(ExplorerMessage::CanvasPointer(event)))
+            .on_focus_change(move |focused| {
+                focus_dispatch.emit(ExplorerMessage::CanvasFocus(focused));
+            })
+            .on_key(move |event| key_dispatch.emit(ExplorerMessage::CanvasKey(event)))
+            .on_ime(move |event| dispatch.emit(ExplorerMessage::CanvasIme(event)))
             .with_key("canvas-surface"),
             spacer(true, false).with_key("canvas-trailing-space"),
         ])
@@ -1156,10 +1259,37 @@ fn canvas_pane(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) -
         ])
         .align(Align::Center)
         .with_key("canvas-caption-row"),
+        row([
+            spacer(true, false).with_key("canvas-input-caption-leading-space"),
+            label(canvas_input_caption(model))
+                .text_role(TextRole::Monospace)
+                .with_key("canvas-input-caption"),
+            spacer(true, false).with_key("canvas-input-caption-trailing-space"),
+        ])
+        .align(Align::Center)
+        .with_key("canvas-input-caption-row"),
     ])
     .justify(Justify::Center)
     .spacing(Spacing::Section)
     .with_key("canvas-pane")
+}
+
+/// Mirrors the text-input state into an assertable caption: focus, the echo
+/// line, the live preedit, and the last raw key in chord notation.
+fn canvas_input_caption(model: &ExplorerComponent) -> String {
+    format!(
+        "input: focused={} echo={:?} preedit={:?} key={}",
+        model.canvas_focused,
+        model.canvas_echo,
+        model
+            .canvas_preedit
+            .as_ref()
+            .map_or("", |(text, _)| text.as_str()),
+        model
+            .canvas_last_key
+            .as_ref()
+            .map_or_else(|| "none".to_owned(), ToString::to_string),
+    )
 }
 
 fn canvas_pointer_caption(pointer: Option<PointerEvent>) -> String {
@@ -1182,10 +1312,11 @@ fn canvas_pointer_caption(pointer: Option<PointerEvent>) -> String {
 }
 
 /// Builds the deterministic owned-drawing test pattern: a hairline cell
-/// grid, a color palette strip, a ring gauge, a clipped disc, and one
-/// monospace glyph run. The optional crosshair follows the last pointer
-/// event so the round trip is visible on screen.
-fn canvas_test_pattern(pointer: Option<PointerEvent>) -> DrawScene {
+/// grid, a color palette strip, a ring gauge, a clipped disc, one monospace
+/// glyph run, and the text-input echo line. The optional crosshair follows
+/// the last pointer event so the round trip is visible on screen.
+fn canvas_test_pattern(model: &ExplorerComponent) -> DrawScene {
+    let pointer = model.canvas_pointer;
     let mut scene = DrawScene::new();
     let grid_left = CANVAS_MARGIN;
     let grid_top = CANVAS_MARGIN;
@@ -1297,6 +1428,50 @@ fn canvas_test_pattern(pointer: Option<PointerEvent>) -> DrawScene {
         13.0,
         CanvasColor::rgb(0.92, 0.94, 0.97),
     );
+
+    // Text-input echo line: typed and committed text after the prompt, the
+    // live preedit rendered distinctly (accent color over an underline —
+    // the app owns preedit presentation), and the declared caret rectangle
+    // drawn where the OS candidate window anchors.
+    let accent = CanvasColor::rgb(1.0, 0.76, 0.24);
+    let echo_origin = echo_origin();
+    scene.glyph_run(
+        echo_origin,
+        format!("{ECHO_PROMPT}{}", model.canvas_echo),
+        ECHO_FONT_SIZE,
+        CanvasColor::rgb(0.85, 0.93, 0.85),
+    );
+    if let Some((preedit, _)) = &model.canvas_preedit {
+        let preedit_left =
+            echo_origin.x + echo_advance(ECHO_PROMPT) + echo_advance(&model.canvas_echo);
+        scene.glyph_run(
+            CanvasPoint::new(preedit_left, echo_origin.y),
+            preedit.clone(),
+            ECHO_FONT_SIZE,
+            accent,
+        );
+        let underline_y = echo_origin.y + ECHO_FONT_SIZE + 4.0;
+        scene.line(
+            CanvasPoint::new(preedit_left, underline_y),
+            CanvasPoint::new(preedit_left + echo_advance(preedit), underline_y),
+            LineWidth::Points(1.5),
+            accent,
+        );
+    }
+    scene.fill_rect(canvas_caret_rect(model), accent);
+    if model.canvas_focused {
+        // Focus ring: the visible sign that the canvas holds keyboard focus.
+        scene.stroke_rect(
+            CanvasRect::new(
+                1.0,
+                1.0,
+                CANVAS_EXTENT.width - 2.0,
+                CANVAS_EXTENT.height - 2.0,
+            ),
+            LineWidth::Points(2.0),
+            CanvasColor::rgb(0.35, 0.62, 1.0),
+        );
+    }
 
     // Crosshair follows the last pointer event.
     if let Some(event) = pointer {

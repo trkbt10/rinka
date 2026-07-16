@@ -349,6 +349,86 @@ impl Element {
         self
     }
 
+    /// Declares whether a canvas participates in keyboard focus and hosts
+    /// text input.
+    ///
+    /// An input-accepting canvas can become the platform's focused text
+    /// input (first responder on macOS), joins the window's key-view loop,
+    /// and receives [`Element::on_key`], [`Element::on_ime`], and
+    /// [`Element::on_focus_change`] events. Accelerator routing treats a
+    /// focused input-accepting canvas exactly like a focused native text
+    /// field: window-scoped entries are withheld unless declared global
+    /// (see [`crate::KeyRoutingContext`]).
+    pub fn accepts_input(mut self, accepts: bool) -> Self {
+        match &mut self.props {
+            Props::Canvas {
+                accepts_input: value,
+                ..
+            } => *value = accepts,
+            _ => panic!("accepts_input is valid only for a canvas"),
+        }
+        self
+    }
+
+    /// Declares the element-local rectangle anchoring the operating-system
+    /// IME candidate window.
+    ///
+    /// The application supplies the caret rectangle declaratively — it is
+    /// reconciled like every other property — and the platform adapter
+    /// answers the input method's geometry query (macOS
+    /// `firstRectForCharacterRange:`) from the retained value. Requires
+    /// [`Element::accepts_input`].
+    pub fn ime_caret(mut self, caret: crate::CanvasRect) -> Self {
+        match &mut self.props {
+            Props::Canvas { ime_caret, .. } => *ime_caret = Some(caret),
+            _ => panic!("ime_caret is valid only for a canvas"),
+        }
+        self
+    }
+
+    /// Handles raw key-down events on a focused input-accepting canvas.
+    ///
+    /// Requires [`Element::accepts_input`]. Key-downs the platform input
+    /// method consumes into a composition arrive as [`Element::on_ime`]
+    /// events instead; see [`crate::KeyEvent`] for the split.
+    pub fn on_key(mut self, handler: impl Fn(crate::KeyEvent) + 'static) -> Self {
+        match &self.props {
+            Props::Canvas { .. } => {
+                self.handlers.key = Some(Rc::new(handler) as crate::KeyHandler);
+            }
+            _ => panic!("on_key is valid only for a canvas"),
+        }
+        self
+    }
+
+    /// Handles IME composition events on a focused input-accepting canvas.
+    ///
+    /// Requires [`Element::accepts_input`]. The application owns rendering
+    /// the preedit inside the canvas; see [`crate::ImeEvent`].
+    pub fn on_ime(mut self, handler: impl Fn(crate::ImeEvent) + 'static) -> Self {
+        match &self.props {
+            Props::Canvas { .. } => {
+                self.handlers.ime = Some(Rc::new(handler) as crate::ImeHandler);
+            }
+            _ => panic!("on_ime is valid only for a canvas"),
+        }
+        self
+    }
+
+    /// Handles keyboard-focus changes on an input-accepting canvas; the
+    /// handler receives `true` on focus gained and `false` on focus lost.
+    ///
+    /// Requires [`Element::accepts_input`].
+    pub fn on_focus_change(mut self, handler: impl Fn(bool) + 'static) -> Self {
+        match &self.props {
+            Props::Canvas { .. } => {
+                self.handlers.focus = Some(Rc::new(handler) as crate::FocusHandler);
+            }
+            _ => panic!("on_focus_change is valid only for a canvas"),
+        }
+        self
+    }
+
     /// Declares the window's accelerator table on its content root.
     ///
     /// Entries map key chords to messages and are reconciled like every other
@@ -708,6 +788,8 @@ pub fn canvas(
     Element::leaf(Props::Canvas {
         size,
         scene,
+        accepts_input: false,
+        ime_caret: None,
         accessibility_label: accessibility_label.into(),
     })
 }
@@ -733,6 +815,46 @@ mod tests {
             element.props(),
             Props::Toggle {
                 size: ControlSize::Small,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn canvas_declares_input_acceptance_and_a_reconciled_ime_caret() {
+        let element = canvas(
+            crate::CanvasSize::new(80.0, 24.0),
+            crate::DrawScene::new(),
+            "Terminal",
+        )
+        .accepts_input(true)
+        .ime_caret(crate::CanvasRect::new(8.0, 4.0, 1.0, 16.0))
+        .on_key(|_| {})
+        .on_ime(|_| {})
+        .on_focus_change(|_| {});
+
+        assert!(matches!(
+            element.props(),
+            Props::Canvas {
+                accepts_input: true,
+                ime_caret: Some(caret),
+                ..
+            } if *caret == crate::CanvasRect::new(8.0, 4.0, 1.0, 16.0)
+        ));
+        assert!(element.handlers.key.is_some());
+        assert!(element.handlers.ime.is_some());
+        assert!(element.handlers.focus.is_some());
+
+        let plain = canvas(
+            crate::CanvasSize::new(80.0, 24.0),
+            crate::DrawScene::new(),
+            "Meter",
+        );
+        assert!(matches!(
+            plain.props(),
+            Props::Canvas {
+                accepts_input: false,
+                ime_caret: None,
                 ..
             }
         ));

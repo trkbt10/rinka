@@ -2,7 +2,7 @@
 
 use crate::drag::{DragPayload, DropTarget, FileDrop, FilePromise, PayloadDrop};
 use crate::menu::ContextMenu;
-use crate::{PointerEvent, TableSort, TextChange, TextSelection};
+use crate::{ImeEvent, KeyEvent, PointerEvent, TableSort, TextChange, TextSelection};
 use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
@@ -25,6 +25,13 @@ pub type SelectionChangeHandler = Rc<dyn Fn(TextSelection)>;
 pub type FileDropHandler = Rc<dyn Fn(FileDrop)>;
 /// Callback used by elements accepting typed intra-application payloads.
 pub type PayloadDropHandler = Rc<dyn Fn(PayloadDrop)>;
+/// Callback used by input-accepting canvases for raw key-down events.
+pub type KeyHandler = Rc<dyn Fn(KeyEvent)>;
+/// Callback used by input-accepting canvases for IME composition events.
+pub type ImeHandler = Rc<dyn Fn(ImeEvent)>;
+/// Callback used by input-accepting canvases for focus changes; `true`
+/// reports focus gained, `false` focus lost.
+pub type FocusHandler = Rc<dyn Fn(bool)>;
 
 /// Event handlers associated with one declarative element.
 #[derive(Clone, Default)]
@@ -34,6 +41,9 @@ pub struct EventHandlers {
     pub(crate) toggle: Option<ToggleHandler>,
     pub(crate) sort: Option<SortHandler>,
     pub(crate) pointer: Option<PointerHandler>,
+    pub(crate) key: Option<KeyHandler>,
+    pub(crate) ime: Option<ImeHandler>,
+    pub(crate) focus: Option<FocusHandler>,
     /// The context-menu model rides with the handlers because its items carry
     /// activation closures that must stay current across renders.
     pub(crate) context_menu: Option<ContextMenu>,
@@ -57,6 +67,9 @@ impl fmt::Debug for EventHandlers {
             .field("toggle", &self.toggle.is_some())
             .field("sort", &self.sort.is_some())
             .field("pointer", &self.pointer.is_some())
+            .field("key", &self.key.is_some())
+            .field("ime", &self.ime.is_some())
+            .field("focus", &self.focus.is_some())
             .field("context_menu", &self.context_menu.is_some())
             .field("text_change", &self.text_change.is_some())
             .field("selection_change", &self.selection_change.is_some())
@@ -76,6 +89,9 @@ struct EventSlots {
     toggle: Option<ToggleHandler>,
     sort: Option<SortHandler>,
     pointer: Option<PointerHandler>,
+    key: Option<KeyHandler>,
+    ime: Option<ImeHandler>,
+    focus: Option<FocusHandler>,
     context_menu: Option<ContextMenu>,
     text_change: Option<TextChangeHandler>,
     selection_change: Option<SelectionChangeHandler>,
@@ -97,6 +113,9 @@ impl EventSlots {
             context_menu: handlers.context_menu.clone(),
             text_change: handlers.text_change.clone(),
             selection_change: handlers.selection_change.clone(),
+            key: handlers.key.clone(),
+            ime: handlers.ime.clone(),
+            focus: handlers.focus.clone(),
             file_drop: handlers.file_drop.clone(),
             payload_drop: handlers.payload_drop.clone(),
             file_promise: handlers.file_promise.clone(),
@@ -142,6 +161,9 @@ impl EventBindings {
         slots.toggle.clone_from(&handlers.toggle);
         slots.sort.clone_from(&handlers.sort);
         slots.pointer.clone_from(&handlers.pointer);
+        slots.key.clone_from(&handlers.key);
+        slots.ime.clone_from(&handlers.ime);
+        slots.focus.clone_from(&handlers.focus);
         slots.context_menu.clone_from(&handlers.context_menu);
         slots.text_change.clone_from(&handlers.text_change);
         slots
@@ -191,6 +213,31 @@ impl EventBindings {
         let handler = self.0.borrow().pointer.clone();
         if let Some(handler) = handler {
             handler(value);
+        }
+    }
+
+    /// Emits a raw key-down event through the current handler.
+    pub fn emit_key(&self, value: KeyEvent) {
+        let handler = self.0.borrow().key.clone();
+        if let Some(handler) = handler {
+            handler(value);
+        }
+    }
+
+    /// Emits an IME composition event through the current handler.
+    pub fn emit_ime(&self, value: ImeEvent) {
+        let handler = self.0.borrow().ime.clone();
+        if let Some(handler) = handler {
+            handler(value);
+        }
+    }
+
+    /// Emits a focus change through the current handler; `true` reports
+    /// focus gained.
+    pub fn emit_focus(&self, focused: bool) {
+        let handler = self.0.borrow().focus.clone();
+        if let Some(handler) = handler {
+            handler(focused);
         }
     }
 
@@ -312,6 +359,9 @@ impl fmt::Debug for EventBindings {
             .field("toggle", &slots.toggle.is_some())
             .field("sort", &slots.sort.is_some())
             .field("pointer", &slots.pointer.is_some())
+            .field("key", &slots.key.is_some())
+            .field("ime", &slots.ime.is_some())
+            .field("focus", &slots.focus.is_some())
             .field("context_menu", &slots.context_menu.is_some())
             .field("text_change", &slots.text_change.is_some())
             .field("selection_change", &slots.selection_change.is_some())

@@ -91,7 +91,7 @@ impl CanvasRect {
         }
     }
 
-    fn invalid_reason(&self) -> Option<String> {
+    pub(crate) fn invalid_reason(&self) -> Option<String> {
         if !self.origin.is_finite() || !self.size.is_finite() {
             return Some("rectangle coordinates must be finite".to_owned());
         }

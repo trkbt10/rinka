@@ -219,6 +219,8 @@ fn apply_patch(
         Props::Canvas {
             size,
             scene,
+            accepts_input,
+            ime_caret,
             accessibility_label,
         } => {
             set_string(handle.view(), SET_ACCESSIBILITY_LABEL, accessibility_label);
@@ -226,7 +228,7 @@ fn apply_patch(
             let canvas = canvas
                 .as_ref()
                 .ok_or_else(|| AppKitError("canvas handle has no native canvas view".to_owned()))?;
-            canvas.apply_content(*size, scene);
+            canvas.apply_content(*size, scene, *accepts_input, *ime_caret);
         }
         Props::Status { title, message, .. } => {
             if let Some(title_view) = handle.0.auxiliaries.first() {

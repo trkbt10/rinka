@@ -53,6 +53,14 @@ pub enum TreeError {
         /// Human-readable invariant violation.
         reason: String,
     },
+    /// A canvas declared text-input handlers or an IME caret inconsistently
+    /// with its input acceptance.
+    InvalidCanvasInput {
+        /// Element path.
+        path: String,
+        /// Human-readable invariant violation.
+        reason: String,
+    },
     /// An image element declared pixel geometry its buffer cannot satisfy.
     InvalidImage {
         /// Element path.
@@ -131,6 +139,9 @@ impl fmt::Display for TreeError {
             }
             Self::InvalidCanvasScene { path, reason } => {
                 write!(formatter, "invalid canvas at {path}: {reason}")
+            }
+            Self::InvalidCanvasInput { path, reason } => {
+                write!(formatter, "invalid canvas input at {path}: {reason}")
             }
             Self::InvalidImage { path, reason } => {
                 write!(formatter, "invalid image at {path}: {reason}")
@@ -435,7 +446,14 @@ fn validate_drag_declarations(element: &Element, path: &str) -> Result<(), TreeE
 }
 
 fn validate_canvas(element: &Element, path: &str) -> Result<(), TreeError> {
-    let crate::Props::Canvas { size, scene, .. } = element.props() else {
+    let crate::Props::Canvas {
+        size,
+        scene,
+        accepts_input,
+        ime_caret,
+        ..
+    } = element.props()
+    else {
         return Ok(());
     };
     if !size.width.is_finite()
@@ -455,6 +473,34 @@ fn validate_canvas(element: &Element, path: &str) -> Result<(), TreeError> {
         return Err(TreeError::InvalidCanvasScene {
             path: path.to_owned(),
             reason,
+        });
+    }
+    if !accepts_input {
+        // A canvas that never becomes the focused text input can never
+        // receive these; declaring them without input acceptance is a
+        // contract bug worth rejecting instead of silently never firing.
+        let orphaned = [
+            (element.handlers.key.is_some(), "an on_key handler"),
+            (element.handlers.ime.is_some(), "an on_ime handler"),
+            (
+                element.handlers.focus.is_some(),
+                "an on_focus_change handler",
+            ),
+            (ime_caret.is_some(), "an ime_caret rectangle"),
+        ]
+        .into_iter()
+        .find_map(|(declared, what)| declared.then_some(what));
+        if let Some(what) = orphaned {
+            return Err(TreeError::InvalidCanvasInput {
+                path: path.to_owned(),
+                reason: format!("{what} requires accepts_input"),
+            });
+        }
+    }
+    if let Some(reason) = ime_caret.as_ref().and_then(|caret| caret.invalid_reason()) {
+        return Err(TreeError::InvalidCanvasInput {
+            path: path.to_owned(),
+            reason: format!("ime caret rectangle is invalid: {reason}"),
         });
     }
     Ok(())

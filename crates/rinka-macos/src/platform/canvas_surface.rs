@@ -11,6 +11,8 @@ unsafe extern "C" {
     static FOREGROUND_COLOR_ATTRIBUTE_NAME: *mut AnyObject;
     #[link_name = "NSAccessibilityImageRole"]
     static ACCESSIBILITY_IMAGE_ROLE: *mut AnyObject;
+    #[link_name = "NSAccessibilityTextAreaRole"]
+    static ACCESSIBILITY_TEXT_AREA_ROLE: *mut AnyObject;
 }
 
 /// `NSTrackingMouseMoved | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect`.
@@ -41,7 +43,56 @@ struct CanvasViewIvars {
     size: Cell<CanvasSize>,
     scene: RefCell<DrawScene>,
     events: EventBindings,
+    /// Whether the canvas participates in keyboard focus and text input.
+    accepts_input: Cell<bool>,
+    /// App-declared candidate-window anchor served to the input method.
+    ime_caret: Cell<Option<CanvasRect>>,
+    /// Current preedit text of the active composition, empty outside one.
+    marked_text: RefCell<String>,
+    /// Present only while one keyDown: is being interpreted; captures the
+    /// text the input context inserted for it and whether a composition
+    /// consumed it.
+    pending_key: RefCell<Option<PendingCanvasKey>>,
 }
+
+/// Raw facts of one key-down being interpreted by the input context.
+struct PendingCanvasKey {
+    key: Option<KeyIdentity>,
+    modifiers: Modifiers,
+    repeat: bool,
+    /// Text the input context inserted for this key press, outside any
+    /// composition.
+    text: Option<String>,
+    /// Whether this key press began, updated, or committed a composition.
+    composition: bool,
+}
+
+/// Holds the protocol declaration so the lint scope is explicit: the trait
+/// docs do carry a `# Safety` section, but `extern_protocol!` re-attaches
+/// them during expansion where clippy no longer recognizes it.
+#[allow(clippy::missing_safety_doc)]
+mod text_input_protocol {
+    objc2::extern_protocol!(
+        /// AppKit's text-input-client protocol.
+        ///
+        /// Adopting it (the `unsafe impl` block inside `define_class!` of
+        /// the canvas view) is what makes `NSView.inputContext` return a
+        /// live `NSTextInputContext` for the canvas, routing every focused
+        /// key-down through the active operating-system input method. The
+        /// trait declares no Rust methods because rinka only implements the
+        /// protocol, never messages it.
+        ///
+        /// # Safety
+        ///
+        /// An implementing type must be an Objective-C object that satisfies
+        /// every required `NSTextInputClient` selector; `CanvasView`
+        /// implements them all in its `define_class!` protocol block.
+        // SAFETY: `NSTextInputClient` is an existing AppKit protocol.
+        pub(crate) unsafe trait NSTextInputClient {}
+    );
+}
+
+use text_input_protocol::NSTextInputClient;
 
 define_class!(
     #[unsafe(super = NSView)]
@@ -78,6 +129,18 @@ define_class!(
 
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &AnyObject) {
+            if self.ivars().accepts_input.get() {
+                // Clicking an input-accepting canvas moves keyboard focus to
+                // it, matching native text-field behavior.
+                // SAFETY: The window is queried and messaged on the main
+                // thread; makeFirstResponder: accepts any responder.
+                unsafe {
+                    let window: *mut AnyObject = msg_send![self, window];
+                    if !window.is_null() {
+                        let _: bool = msg_send![window, makeFirstResponder: self];
+                    }
+                }
+            }
             self.emit_pointer(event, PointerPhase::Down, PointerButton::Primary);
         }
 
@@ -151,6 +214,200 @@ define_class!(
             let events = self.ivars().events.clone();
             deliver_view_drop(self, &events, info)
         }
+
+        #[unsafe(method(acceptsFirstResponder))]
+        fn accepts_first_responder(&self) -> bool {
+            // Input acceptance also enrolls the canvas in the window's
+            // key-view loop; a purely graphical canvas stays out of it.
+            self.ivars().accepts_input.get()
+        }
+
+        #[unsafe(method(becomeFirstResponder))]
+        fn become_first_responder(&self) -> bool {
+            // SAFETY: NSView's own implementation completes the responder
+            // transition before the component observes it.
+            let accepted: bool = unsafe { msg_send![super(self), becomeFirstResponder] };
+            if accepted {
+                self.ivars().events.emit_focus(true);
+            }
+            accepted
+        }
+
+        #[unsafe(method(resignFirstResponder))]
+        fn resign_first_responder(&self) -> bool {
+            // SAFETY: NSView's own implementation completes the responder
+            // transition before the component observes it.
+            let resigned: bool = unsafe { msg_send![super(self), resignFirstResponder] };
+            if resigned {
+                self.abandon_composition();
+                self.ivars().events.emit_focus(false);
+            }
+            resigned
+        }
+
+        #[unsafe(method(keyDown:))]
+        fn key_down(&self, event: &AnyObject) {
+            if !self.ivars().accepts_input.get() {
+                // SAFETY: Forwarding preserves NSResponder's default routing
+                // for canvases that do not host text input.
+                unsafe {
+                    let _: () = msg_send![super(self), keyDown: event];
+                }
+                return;
+            }
+            self.interpret_key_event(event);
+        }
+
+        #[unsafe(method(doCommandBySelector:))]
+        fn do_command_by_selector(&self, _selector: objc2::runtime::Sel) {
+            // The input context routes editing commands (arrows, Return,
+            // deletes) here when no composition consumes them; the raw
+            // KeyEvent emitted by keyDown: already reports the key, and
+            // NSResponder's default implementation would beep.
+        }
+    }
+
+    // The selector implementations below satisfy every required
+    // NSTextInputClient method; adopting the protocol is what makes
+    // `NSView.inputContext` non-nil so the OS input method drives them.
+    unsafe impl NSTextInputClient for CanvasView {
+        #[unsafe(method(insertText:replacementRange:))]
+        fn insert_text_in_replacement_range(&self, string: &AnyObject, _range: NSRange) {
+            let text = plain_text_argument(string);
+            let had_marked = !self.ivars().marked_text.borrow().is_empty();
+            if had_marked {
+                // Committing ends the composition; the preedit is implicitly
+                // cleared on the application side.
+                self.ivars().marked_text.borrow_mut().clear();
+                if let Some(pending) = self.ivars().pending_key.borrow_mut().as_mut() {
+                    pending.composition = true;
+                }
+                self.ivars().events.emit_ime(ImeEvent::Commit { text });
+                return;
+            }
+            {
+                let mut pending = self.ivars().pending_key.borrow_mut();
+                if let Some(pending) = pending.as_mut() {
+                    // Plain typing: the text rides on the raw KeyEvent the
+                    // surrounding keyDown: emits.
+                    match &mut pending.text {
+                        Some(existing) => existing.push_str(&text),
+                        slot @ None => *slot = Some(text),
+                    }
+                    return;
+                }
+            }
+            // Insertion outside any key-down: the input method committed
+            // text on its own (a candidate chosen with the mouse).
+            self.ivars().events.emit_ime(ImeEvent::Commit { text });
+        }
+
+        #[unsafe(method(setMarkedText:selectedRange:replacementRange:))]
+        fn set_marked_text(&self, string: &AnyObject, selected: NSRange, _range: NSRange) {
+            let text = plain_text_argument(string);
+            if let Some(pending) = self.ivars().pending_key.borrow_mut().as_mut() {
+                pending.composition = true;
+            }
+            if text.is_empty() {
+                let was_marked = !self.ivars().marked_text.borrow().is_empty();
+                self.ivars().marked_text.borrow_mut().clear();
+                if was_marked {
+                    self.ivars().events.emit_ime(ImeEvent::Cancel);
+                }
+                return;
+            }
+            let caret = utf16_range_to_preedit_caret(&text, selected);
+            self.ivars().marked_text.borrow_mut().clone_from(&text);
+            self.ivars().events.emit_ime(ImeEvent::Preedit { text, caret });
+        }
+
+        #[unsafe(method(unmarkText))]
+        fn unmark_text(&self) {
+            // AppKit defines unmarkText as accepting the current marked
+            // text, so it commits rather than cancels.
+            let text = std::mem::take(&mut *self.ivars().marked_text.borrow_mut());
+            if let Some(pending) = self.ivars().pending_key.borrow_mut().as_mut() {
+                pending.composition = true;
+            }
+            if !text.is_empty() {
+                self.ivars().events.emit_ime(ImeEvent::Commit { text });
+            }
+        }
+
+        #[unsafe(method(hasMarkedText))]
+        fn has_marked_text(&self) -> bool {
+            !self.ivars().marked_text.borrow().is_empty()
+        }
+
+        #[unsafe(method(markedRange))]
+        fn marked_range(&self) -> NSRange {
+            let marked = self.ivars().marked_text.borrow();
+            if marked.is_empty() {
+                empty_text_range()
+            } else {
+                NSRange::new(0, marked.encode_utf16().count())
+            }
+        }
+
+        #[unsafe(method(selectedRange))]
+        fn selected_range(&self) -> NSRange {
+            // The canvas exposes no selection model; the insertion point is
+            // wherever the application's caret rectangle says it is.
+            empty_text_range()
+        }
+
+        #[unsafe(method(attributedSubstringForProposedRange:actualRange:))]
+        fn attributed_substring_for_proposed_range(
+            &self,
+            _range: NSRange,
+            _actual: *mut NSRange,
+        ) -> *mut AnyObject {
+            // The application owns its text storage; the protocol allows nil.
+            std::ptr::null_mut()
+        }
+
+        #[unsafe(method(validAttributesForMarkedText))]
+        fn valid_attributes_for_marked_text(&self) -> *mut AnyObject {
+            // SAFETY: The class factory returns a live autoreleased empty
+            // array; the canvas renders the preedit itself, unstyled.
+            unsafe { msg_send![objc2::class!(NSArray), array] }
+        }
+
+        #[unsafe(method(firstRectForCharacterRange:actualRange:))]
+        fn first_rect_for_character_range(
+            &self,
+            _range: NSRange,
+            _actual: *mut NSRange,
+        ) -> Rect {
+            // The candidate window anchors at the app-declared caret
+            // rectangle, converted from element-local to screen coordinates.
+            let caret = self
+                .ivars()
+                .ime_caret
+                .get()
+                .unwrap_or(CanvasRect::new(0.0, 0.0, 0.0, 0.0));
+            // SAFETY: Geometry conversion happens on the main thread; the
+            // window is checked for teardown.
+            unsafe {
+                let in_window: Rect = msg_send![
+                    self,
+                    convertRect: canvas_rect(caret),
+                    toView: std::ptr::null::<AnyObject>()
+                ];
+                let window: *mut AnyObject = msg_send![self, window];
+                if window.is_null() {
+                    Rect::default()
+                } else {
+                    msg_send![window, convertRectToScreen: in_window]
+                }
+            }
+        }
+
+        #[unsafe(method(characterIndexForPoint:))]
+        fn character_index_for_point(&self, _point: Point) -> usize {
+            // The canvas exposes no character geometry to hit-test into.
+            0
+        }
     }
 );
 
@@ -159,12 +416,18 @@ impl CanvasView {
         mtm: MainThreadMarker,
         size: CanvasSize,
         scene: DrawScene,
+        accepts_input: bool,
+        ime_caret: Option<CanvasRect>,
         events: EventBindings,
     ) -> Retained<Self> {
         let object = Self::alloc(mtm).set_ivars(CanvasViewIvars {
             size: Cell::new(size),
             scene: RefCell::new(scene),
             events,
+            accepts_input: Cell::new(accepts_input),
+            ime_caret: Cell::new(ime_caret),
+            marked_text: RefCell::new(String::new()),
+            pending_key: RefCell::new(None),
         });
         // SAFETY: initWithFrame: is NSView's designated initializer and the
         // ivars were initialized above on the main thread.
@@ -188,10 +451,36 @@ impl CanvasView {
     /// Replaces the retained scene and coalesces the change into one native
     /// redraw: AppKit collapses any number of setNeedsDisplay: marks issued
     /// before the next display pass into a single drawRect: invocation.
-    fn apply_content(&self, size: CanvasSize, scene: &DrawScene) {
+    fn apply_content(
+        &self,
+        size: CanvasSize,
+        scene: &DrawScene,
+        accepts_input: bool,
+        ime_caret: Option<CanvasRect>,
+    ) {
         let size_changed = self.ivars().size.get() != size;
         self.ivars().size.set(size);
         self.ivars().scene.borrow_mut().clone_from(scene);
+        let input_changed = self.ivars().accepts_input.get() != accepts_input;
+        self.ivars().accepts_input.set(accepts_input);
+        let caret_changed = self.ivars().ime_caret.get() != ime_caret;
+        self.ivars().ime_caret.set(ime_caret);
+        if input_changed {
+            self.apply_accessibility_role();
+            if !accepts_input {
+                self.surrender_first_responder();
+            }
+        }
+        if caret_changed {
+            // SAFETY: The input context re-queries firstRectForCharacterRange
+            // so the OS candidate window follows the declared caret.
+            unsafe {
+                let context: *mut AnyObject = msg_send![self, inputContext];
+                if !context.is_null() {
+                    let _: () = msg_send![context, invalidateCharacterCoordinates];
+                }
+            }
+        }
         // SAFETY: The receiver is a live NSView on the main thread.
         unsafe {
             if size_changed {
@@ -199,6 +488,122 @@ impl CanvasView {
             }
             let _: () = msg_send![self, setNeedsDisplay: true];
         }
+    }
+
+    /// Reflects input acceptance in the accessibility tree: an
+    /// input-accepting canvas reads as a text area (the terminal contract),
+    /// a purely graphical one as an image.
+    fn apply_accessibility_role(&self) {
+        // SAFETY: NSView exposes the NSAccessibility role setter and both
+        // role constants are live static NSStrings.
+        unsafe {
+            let role = if self.ivars().accepts_input.get() {
+                ACCESSIBILITY_TEXT_AREA_ROLE
+            } else {
+                ACCESSIBILITY_IMAGE_ROLE
+            };
+            let _: () = msg_send![self, setAccessibilityRole: role];
+        }
+    }
+
+    /// Returns keyboard focus to the window when the canvas holds it while
+    /// losing its input acceptance.
+    fn surrender_first_responder(&self) {
+        // SAFETY: The window and its first responder are read and mutated on
+        // the main thread.
+        unsafe {
+            let window: *mut AnyObject = msg_send![self, window];
+            if window.is_null() {
+                return;
+            }
+            let responder: *mut AnyObject = msg_send![window, firstResponder];
+            if std::ptr::eq(responder.cast_const(), (self as *const Self).cast()) {
+                let _: bool =
+                    msg_send![window, makeFirstResponder: std::ptr::null::<AnyObject>()];
+            }
+        }
+    }
+
+    /// Ends an active composition without committing, discarding the input
+    /// method's session state alongside the client state.
+    fn abandon_composition(&self) {
+        let text = std::mem::take(&mut *self.ivars().marked_text.borrow_mut());
+        if text.is_empty() {
+            return;
+        }
+        // SAFETY: discardMarkedText resets the input method's session so
+        // stale composition state cannot leak into the next focused view.
+        unsafe {
+            let context: *mut AnyObject = msg_send![self, inputContext];
+            if !context.is_null() {
+                let _: () = msg_send![context, discardMarkedText];
+            }
+        }
+        self.ivars().events.emit_ime(ImeEvent::Cancel);
+    }
+
+    /// Interprets one key-down through the input context and emits exactly
+    /// one raw [`KeyEvent`] unless a composition consumed the keystroke.
+    ///
+    /// Delivery decision, recorded for `reports/canvas-text-input`: a
+    /// key-down that begins, updates, or commits a composition produces only
+    /// [`ImeEvent`]s — otherwise the Return that commits a Japanese
+    /// composition would also arrive as a raw Enter and a terminal would
+    /// forward a spurious newline. Every other key-down produces one
+    /// [`KeyEvent`] whose `text` is whatever the input context inserted for
+    /// it, so dead-key results (Option-E then E yielding é) arrive already
+    /// translated through the marked-text path.
+    fn interpret_key_event(&self, event: &AnyObject) {
+        let had_marked = !self.ivars().marked_text.borrow().is_empty();
+        // SAFETY: The argument is a live NSEvent key-down on the main thread.
+        let (characters, key_code, flags, repeat) = unsafe {
+            let characters: *mut AnyObject = msg_send![event, charactersIgnoringModifiers];
+            let key_code: u16 = msg_send![event, keyCode];
+            let flags: usize = msg_send![event, modifierFlags];
+            let repeat: bool = msg_send![event, isARepeat];
+            (rust_string(characters), key_code, flags, repeat)
+        };
+        *self.ivars().pending_key.borrow_mut() = Some(PendingCanvasKey {
+            key: key_identity_from_characters(&characters)
+                .or_else(|| digit_identity_from_key_code(key_code)),
+            modifiers: semantic_modifiers(flags),
+            repeat,
+            text: None,
+            composition: false,
+        });
+        // SAFETY: The view's own NSTextInputContext interprets the event on
+        // the main thread; it calls back into the NSTextInputClient methods
+        // above, which record into the pending key.
+        let context_missing = unsafe {
+            let context: *mut AnyObject = msg_send![self, inputContext];
+            if context.is_null() {
+                true
+            } else {
+                let _handled: bool = msg_send![context, handleEvent: event];
+                false
+            }
+        };
+        let Some(mut pending) = self.ivars().pending_key.borrow_mut().take() else {
+            return;
+        };
+        if context_missing {
+            // Without an input context there is no translation service; the
+            // event's own characters are the produced text.
+            pending.text = printable_event_text(event);
+        }
+        let composing =
+            had_marked || pending.composition || !self.ivars().marked_text.borrow().is_empty();
+        if composing {
+            // The composition consumed this keystroke; its IME events
+            // already carried it to the component.
+            return;
+        }
+        self.ivars().events.emit_key(KeyEvent {
+            key: pending.key,
+            modifiers: pending.modifiers,
+            text: pending.text,
+            repeat: pending.repeat,
+        });
     }
 
     fn backing_scale(&self) -> f64 {
@@ -269,24 +674,90 @@ impl CanvasView {
     }
 }
 
+/// The empty text range NSTextInputClient reports outside any marked text.
+const fn empty_text_range() -> NSRange {
+    NSRange {
+        location: NSNotFound as usize,
+        length: 0,
+    }
+}
+
+/// Extracts the plain text of an NSTextInputClient string argument, which is
+/// either an NSString or an NSAttributedString.
+fn plain_text_argument(string: &AnyObject) -> String {
+    // SAFETY: The argument is a live NSString or NSAttributedString supplied
+    // by the input context on the main thread.
+    unsafe {
+        let is_attributed: bool =
+            msg_send![string, isKindOfClass: objc2::class!(NSAttributedString)];
+        let plain: *mut AnyObject = if is_attributed {
+            msg_send![string, string]
+        } else {
+            (string as *const AnyObject).cast_mut()
+        };
+        rust_string(plain)
+    }
+}
+
+/// Converts one UTF-16 offset into the index of the scalar containing it,
+/// rounding an offset inside a surrogate pair up to the next scalar.
+fn utf16_offset_to_char_index(text: &str, target: usize) -> Option<usize> {
+    let mut utf16 = 0_usize;
+    for (index, character) in text.chars().enumerate() {
+        if utf16 >= target {
+            return Some(index);
+        }
+        utf16 += character.len_utf16();
+    }
+    (utf16 >= target).then(|| text.chars().count())
+}
+
+/// Converts the input method's UTF-16 selection within the marked text into
+/// the platform-neutral scalar-offset caret span.
+fn utf16_range_to_preedit_caret(text: &str, selected: NSRange) -> Option<PreeditCaret> {
+    if selected.location == NSNotFound as usize {
+        return None;
+    }
+    let start = utf16_offset_to_char_index(text, selected.location)?;
+    let end = utf16_offset_to_char_index(text, selected.location.checked_add(selected.length)?)?;
+    Some(PreeditCaret::new(start, end))
+}
+
+/// Returns the text a key event itself produced, filtering control and
+/// AppKit function-key code points that are not text.
+fn printable_event_text(event: &AnyObject) -> Option<String> {
+    // SAFETY: characters is a live NSString property of the key event read
+    // on the main thread.
+    let text = unsafe {
+        let characters: *mut AnyObject = msg_send![event, characters];
+        rust_string(characters)
+    };
+    let is_text = !text.is_empty()
+        && !text
+            .chars()
+            .any(|character| character.is_control() || ('\u{f700}'..='\u{f8ff}').contains(&character));
+    is_text.then_some(text)
+}
+
 fn create_canvas(
     mtm: MainThreadMarker,
     size: CanvasSize,
     scene: &DrawScene,
+    accepts_input: bool,
+    ime_caret: Option<CanvasRect>,
     accessibility_label: &str,
     events: EventBindings,
 ) -> AppKitHandle {
-    let canvas = CanvasView::new(mtm, size, scene.clone(), events);
+    let canvas = CanvasView::new(mtm, size, scene.clone(), accepts_input, ime_caret, events);
     // SAFETY: Retained keeps the object alive across this borrow.
     let view = unsafe {
         Id::from_borrowed(Retained::as_ptr(&canvas) as *mut AnyObject)
     };
-    // SAFETY: NSView exposes the NSAccessibility configuration setters and
-    // the role constant is a live static NSString.
+    // SAFETY: NSView exposes the NSAccessibility configuration setters.
     unsafe {
         let _: () = msg_send![view.as_object(), setAccessibilityElement: true];
-        let _: () = msg_send![view.as_object(), setAccessibilityRole: ACCESSIBILITY_IMAGE_ROLE];
     }
+    canvas.apply_accessibility_role();
     set_string(
         view.as_object(),
         SET_ACCESSIBILITY_LABEL,

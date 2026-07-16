@@ -647,11 +647,15 @@ fn create_element(
         Props::Canvas {
             size,
             scene,
+            accepts_input,
+            ime_caret,
             accessibility_label,
         } => Ok(create_canvas(
             mtm,
             *size,
             scene,
+            *accepts_input,
+            *ime_caret,
             accessibility_label,
             events,
         )),

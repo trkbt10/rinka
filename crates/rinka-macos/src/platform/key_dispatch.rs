@@ -203,14 +203,29 @@ type WindowIdentityRegistry = Rc<RefCell<Vec<(usize, WindowId)>>>;
 /// editor, an NSTextView; NSText covers the field editor and every text view.
 /// Non-editable text (a selectable label's field editor) does not receive
 /// typing, so accelerators stay deliverable there.
+///
+/// Routing decision, recorded for `reports/canvas-text-input`: a focused
+/// input-accepting canvas counts as editable text for the
+/// [`KeyRoutingContext`] fact, so window-scoped accelerators defer to a
+/// focused terminal-style surface exactly as they defer to a focused text
+/// field, and only entries declared global fire over it. A withheld chord
+/// falls through to the canvas as a raw key event.
 unsafe fn first_responder_is_text_input(window: &AnyObject) -> bool {
     // SAFETY: The caller supplies a live NSWindow on the main thread and the
-    // responder is only inspected through public NSText API after the
+    // responder is only inspected through public API after each
     // class-membership check.
     let responder: *mut AnyObject = unsafe { msg_send![window, firstResponder] };
     let Some(responder) = NonNull::new(responder) else {
         return false;
     };
+    let is_canvas: bool =
+        unsafe { msg_send![responder.as_ref(), isKindOfClass: CanvasView::class()] };
+    if is_canvas {
+        // SAFETY: Class membership was verified above and the reference is
+        // used only within this main-thread call.
+        let canvas = unsafe { &*responder.as_ptr().cast::<CanvasView>() };
+        return canvas.ivars().accepts_input.get();
+    }
     let is_text: bool =
         unsafe { msg_send![responder.as_ref(), isKindOfClass: objc2::class!(NSText)] };
     if !is_text {

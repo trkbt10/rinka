@@ -265,13 +265,23 @@ fn write_props(output: &mut String, props: &Props) {
         Props::Canvas {
             size,
             scene,
+            accepts_input,
+            ime_caret,
             accessibility_label,
         } => write!(
             output,
-            "{{\"width\":{},\"height\":{},\"commands\":{},\"accessibilityLabel\":{}}}",
+            "{{\"width\":{},\"height\":{},\"commands\":{},\"acceptsInput\":{},\"imeCaret\":{},\"accessibilityLabel\":{}}}",
             size.width,
             size.height,
             scene.commands().len(),
+            accepts_input,
+            ime_caret.map_or_else(
+                || "null".to_owned(),
+                |caret| format!(
+                    "{{\"x\":{},\"y\":{},\"width\":{},\"height\":{}}}",
+                    caret.origin.x, caret.origin.y, caret.size.width, caret.size.height
+                )
+            ),
             json(accessibility_label)
         )
         .unwrap(),

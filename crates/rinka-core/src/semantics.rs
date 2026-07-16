@@ -647,6 +647,13 @@ pub enum Props {
         size: crate::CanvasSize,
         /// Recorded display list rebuilt by the application each render.
         scene: crate::DrawScene,
+        /// Whether the canvas participates in keyboard focus and receives
+        /// raw key and IME composition events.
+        accepts_input: bool,
+        /// Element-local rectangle anchoring the operating-system IME
+        /// candidate window, reconciled like every other property. `None`
+        /// while the application declares no caret.
+        ime_caret: Option<crate::CanvasRect>,
         /// Screen-reader description of the graphical content.
         accessibility_label: String,
     },

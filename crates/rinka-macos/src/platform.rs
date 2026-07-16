@@ -2,22 +2,22 @@
 
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{AnyObject, NSObjectProtocol};
-use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
-use objc2_foundation::{MainThreadMarker, NSObject, NSRange};
+use objc2::{ClassType, DefinedClass, MainThreadOnly, define_class, msg_send, sel};
+use objc2_foundation::{MainThreadMarker, NSNotFound, NSObject, NSRange};
 use rinka_core::{
     AcceleratorOutcome, AcceleratorRouter, Align, ApplicationSpec, Axis, ButtonMaterial,
     ButtonRole, CanvasColor, CanvasPoint, CanvasRect, CanvasSize, CanvasVector, CollectionPattern,
     ContextMenu, ControlSize, DialogButtonRole, DialogDescription, DialogOutcome, DialogRequest,
     DialogResponder, DialogService, DragPayload, DrawCommand, DrawScene, DropPosition, DropTarget,
     Element, ElementKind, EventBindings, FileDrop, HighlightRole, HighlightSpan, HighlightSpans,
-    ImageContent, ImageScaling, InputKind, Justify, KeyChord, KeyIdentity, KeyRoutingContext,
-    LineWidth, ListRowRole, MenuEntry, MenuItem, Modifiers, MonospaceMetrics, MountedNode,
-    NativeBackend, PanelBehavior, PatternRegion, PayloadDrop, PointerButton, PointerEvent,
-    PointerModifiers, PointerPhase, PrimaryModifier, PropertyPatch, Props, Renderer, SortDirection,
-    Spacing, StatusTone, Symbol, TableColumn, TableSort, TextChange, TextContent, TextEdit,
-    TextRange, TextRevision, TextRole, TextSelection, TextSyncAction, ToolbarAction,
-    ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem, ToolbarItemKind, ToolbarPlacement, UiPattern,
-    WindowId, WindowKind, WindowRuntime, WindowSpec,
+    ImageContent, ImageScaling, ImeEvent, InputKind, Justify, KeyChord, KeyEvent, KeyIdentity,
+    KeyRoutingContext, LineWidth, ListRowRole, MenuEntry, MenuItem, Modifiers, MonospaceMetrics,
+    MountedNode, NativeBackend, PanelBehavior, PatternRegion, PayloadDrop, PointerButton,
+    PointerEvent, PointerModifiers, PointerPhase, PreeditCaret, PrimaryModifier, PropertyPatch,
+    Props, Renderer, SortDirection, Spacing, StatusTone, Symbol, TableColumn, TableSort,
+    TextChange, TextContent, TextEdit, TextRange, TextRevision, TextRole, TextSelection,
+    TextSyncAction, ToolbarAction, ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem,
+    ToolbarItemKind, ToolbarPlacement, UiPattern, WindowId, WindowKind, WindowRuntime, WindowSpec,
 };
 use std::cell::{Cell, RefCell};
 use std::error::Error;
