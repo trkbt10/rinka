@@ -211,9 +211,10 @@ impl ApplicationDelegate {
                     self.finish_menu_bar_probe();
                     return;
                 }
-                // New Folder is disabled in the error scene; its chord must
-                // be refused by native validation.
-                self.post_probe_chord("n", 45, NS_EVENT_MODIFIER_COMMAND);
+                // New Folder is disabled in the error scene; its chord
+                // (Primary+Alt+N — Primary+N belongs to New Window) must be
+                // refused by native validation.
+                self.post_probe_chord("n", 45, NS_EVENT_MODIFIER_COMMAND | NS_EVENT_MODIFIER_OPTION);
                 advance();
             }
             3 => {
@@ -251,7 +252,7 @@ impl ApplicationDelegate {
                 }
                 // With the listing live again, the menu-only chord must
                 // dispatch New Folder to the focused window's component.
-                self.post_probe_chord("n", 45, NS_EVENT_MODIFIER_COMMAND);
+                self.post_probe_chord("n", 45, NS_EVENT_MODIFIER_COMMAND | NS_EVENT_MODIFIER_OPTION);
                 advance();
             }
             5 => {
@@ -492,6 +493,14 @@ unsafe fn probe_menu_bar_structure() -> bool {
             menu_item_titled(file.as_object(), "New Folder").is_some_and(|item| {
                 let key: *mut AnyObject = msg_send![item.as_object(), keyEquivalent];
                 let mask: usize = msg_send![item.as_object(), keyEquivalentModifierMask];
+                rust_string(key) == "n"
+                    && mask == NS_EVENT_MODIFIER_COMMAND | NS_EVENT_MODIFIER_OPTION
+            })
+        });
+        let new_window_pass = menu_bar_submenu("File").is_some_and(|file| {
+            menu_item_titled(file.as_object(), "New Window").is_some_and(|item| {
+                let key: *mut AnyObject = msg_send![item.as_object(), keyEquivalent];
+                let mask: usize = msg_send![item.as_object(), keyEquivalentModifierMask];
                 rust_string(key) == "n" && mask == NS_EVENT_MODIFIER_COMMAND
             })
         });
@@ -503,9 +512,10 @@ unsafe fn probe_menu_bar_structure() -> bool {
             && help_pass
             && copy_pass
             && new_folder_pass
+            && new_window_pass
             && checkmark_pass;
         eprintln!(
-            "Rinka menu-bar probe step=structure items={count} titles={titles:?} titles_pass={titles_pass} windows_menu={windows_pass} help_menu={help_pass} copy_role={copy_pass} new_folder_chord={new_folder_pass} checkmarks={checkmark_pass} pass={passed}"
+            "Rinka menu-bar probe step=structure items={count} titles={titles:?} titles_pass={titles_pass} windows_menu={windows_pass} help_menu={help_pass} copy_role={copy_pass} new_folder_chord={new_folder_pass} new_window_chord={new_window_pass} checkmarks={checkmark_pass} pass={passed}"
         );
         passed
     }

@@ -1,9 +1,9 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help install typecheck lint test build dev fixture surface macos-demo macos-bundle macos-accelerator-probe macos-clipboard-probe macos-dialog-probe macos-scene-matrix macos-transition-matrix macos-transition-visual-matrix macos-visual-matrix gtk-demo gtk-scene-matrix gtk-wayland-smoke gtk-gnome-shell-smoke windows-bootstrap windows-demo windows-scene-matrix macos-drag-drop-probe macos-text-input-probe macos-menu-bar-probe macos-dock-probe
+.PHONY: help install typecheck lint test build dev fixture surface macos-demo macos-bundle macos-accelerator-probe macos-clipboard-probe macos-dialog-probe macos-scene-matrix macos-transition-matrix macos-transition-visual-matrix macos-visual-matrix gtk-demo gtk-scene-matrix gtk-wayland-smoke gtk-gnome-shell-smoke windows-bootstrap windows-demo windows-scene-matrix macos-drag-drop-probe macos-text-input-probe macos-menu-bar-probe macos-dock-probe macos-window-lifecycle-probe
 
 help:
-	@printf '%s\n' 'install typecheck lint test build dev fixture surface macos-demo macos-bundle macos-accelerator-probe macos-clipboard-probe macos-dialog-probe macos-scene-matrix macos-transition-matrix macos-transition-visual-matrix macos-visual-matrix gtk-demo gtk-scene-matrix gtk-wayland-smoke gtk-gnome-shell-smoke windows-bootstrap windows-demo windows-scene-matrix macos-drag-drop-probe macos-text-input-probe macos-menu-bar-probe macos-dock-probe'
+	@printf '%s\n' 'install typecheck lint test build dev fixture surface macos-demo macos-bundle macos-accelerator-probe macos-clipboard-probe macos-dialog-probe macos-scene-matrix macos-transition-matrix macos-transition-visual-matrix macos-visual-matrix gtk-demo gtk-scene-matrix gtk-wayland-smoke gtk-gnome-shell-smoke windows-bootstrap windows-demo windows-scene-matrix macos-drag-drop-probe macos-text-input-probe macos-menu-bar-probe macos-dock-probe macos-window-lifecycle-probe'
 
 install:
 	@cargo fetch
@@ -52,8 +52,13 @@ macos-text-input-probe:
 macos-menu-bar-probe:
 	@scripts/appkit-menu-bar-probe.sh
 
+<<<<<<< HEAD
 macos-dock-probe:
 	@scripts/appkit-dock-probe.sh
+=======
+macos-window-lifecycle-probe:
+	@scripts/appkit-window-lifecycle-probe.sh
+>>>>>>> b873b92 (feat: open, retitle, and veto-close explorer windows at runtime)
 
 macos-scene-matrix:
 	@scripts/appkit-scene-matrix.sh

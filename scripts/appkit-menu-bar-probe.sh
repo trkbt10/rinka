@@ -52,7 +52,7 @@ probe_once() {
   # otherwise, and responder-chain dispatch is mechanism-labeled.
   for line in \
     "probe step=initial_scene observed_scene=ready active=(true|false) pass=true" \
-    "probe step=structure .* titles_pass=true windows_menu=true help_menu=true copy_role=true new_folder_chord=true checkmarks=true pass=true" \
+    "probe step=structure .* titles_pass=true windows_menu=true help_menu=true copy_role=true new_folder_chord=true new_window_chord=true checkmarks=true pass=true" \
     "probe step=checkmark_reconcile empty_state=Some\\(1\\) ready_state=Some\\(0\\) pass=true" \
     "activation item=view-scene-empty key_window=(explorer-main|none) outcome=dispatched window=explorer-main" \
     "probe step=menu_key_equivalent error_state=Some\\(1\\) new_folder_enabled=Some\\(false\\) pass=true" \
@@ -83,7 +83,7 @@ probe_once() {
     echo "a shadowed accelerator entry dispatched" >&2
     return 1
   fi
-  # The refused Primary+N in the error scene must not have activated.
+  # The refused Primary+Alt+N in the error scene must not have activated.
   if [ "$(grep -c 'Rinka menu-bar activation item=file-new-folder' "$log")" -ne 1 ]; then
     echo "file-new-folder fired other than exactly once" >&2
     return 1

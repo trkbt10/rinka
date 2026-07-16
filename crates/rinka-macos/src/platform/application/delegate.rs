@@ -47,6 +47,7 @@ impl ApplicationDelegate {
             dialog_probe: RefCell::new(None),
             text_input_probe: RefCell::new(None),
             menu_bar_probe: RefCell::new(None),
+            window_lifecycle_probe: RefCell::new(None),
         });
         // SAFETY: NSObject's init signature and ownership convention are stable.
         unsafe { msg_send![super(object), init] }

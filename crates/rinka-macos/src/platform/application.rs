@@ -13,5 +13,6 @@ include!("application/window_host.rs");
 include!("application/window_service_host.rs");
 include!("application/dialog_host.rs");
 include!("application/dialog_probe.rs");
+include!("application/window_lifecycle_probe.rs");
 include!("application/run.rs");
 include!("application/testing.rs");

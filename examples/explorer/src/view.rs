@@ -12,10 +12,21 @@ use rinka::{
     SortDirection, Spacing, StandardItem, StatusTone, Submenu, Symbol, TableColumn, TableSort,
     TextChange, TextRole, TextSelection, ToolbarAction, ToolbarChoice, ToolbarDisplay,
     ToolbarGroupDisplay, ToolbarItem, ToolbarPlacement, UiPattern, UpdateContext, WindowContent,
-    WindowId, WindowKind, WindowSpec, button, canvas, column, dock, image, input, label, list,
-    list_row, mount_pattern, progress, row, separator, spacer, status, text_area, toggle,
+    WindowEvent, WindowId, WindowKind, WindowSpec, button, canvas, column, dock, image, input,
+    label, list, list_row, mount_pattern, progress, row, separator, spacer, status, text_area,
+    toggle,
 };
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
+
+/// Serial for runtime-opened window identities.
+///
+/// Any explorer window can open further windows, and every open needs an
+/// identity no other open in this process ever used ([`WindowId`] is the
+/// window reconcile key and re-opening an open identity is a typed error),
+/// so the counter is process-global and monotonic rather than per-component
+/// state.
+static NEXT_WINDOW_SERIAL: AtomicU32 = AtomicU32::new(1);
 
 /// Meaningful UI state used by the consumer verification matrix.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -154,6 +165,12 @@ fn drag_interactions_enabled() -> bool {
 }
 
 struct ExplorerComponent {
+    /// This window's stable identity — the value every window service call
+    /// (close, confirm_close, veto_close) addresses.
+    window_id: WindowId,
+    /// Whether this component runs in a runtime-opened secondary window,
+    /// which declares its reconciled title from scene state.
+    secondary: bool,
     scene: Scene,
     location: Location,
     selected_file: Option<FileKey>,
@@ -179,6 +196,7 @@ struct ExplorerComponent {
     duplicated: Vec<FileKey>,
     favorite_files: Vec<FileKey>,
     last_file_action: Option<String>,
+    window_note: Option<String>,
     editor: EditorState,
     dock_layout: DockLayout,
     dock_saved: Option<String>,
@@ -188,12 +206,27 @@ struct ExplorerComponent {
 
 impl ExplorerComponent {
     fn new(scene: Scene) -> Self {
+        Self::for_window(scene, WindowId::new("explorer-main"), false)
+    }
+
+    /// Builds the component of a runtime-opened secondary window.
+    fn secondary(scene: Scene, serial: u32) -> Self {
+        Self::for_window(
+            scene,
+            WindowId::new(format!("explorer-secondary-{serial}")),
+            true,
+        )
+    }
+
+    fn for_window(scene: Scene, window_id: WindowId, secondary: bool) -> Self {
         // Deterministic capture aid: preselecting the generated PNG preview
         // lets the visual matrix photograph the inspector bitmap without
         // synthetic input, following the RINKA_APPKIT_CONTENT_FIT_PROBE
         // precedent.
         let preselect_preview = std::env::var_os("RINKA_EXPLORER_SELECT_PREVIEW").is_some();
         Self {
+            window_id,
+            secondary,
             scene,
             location: Location::RemoteProject,
             selected_file: (scene == Scene::Ready).then_some(if preselect_preview {
@@ -232,6 +265,7 @@ impl ExplorerComponent {
             duplicated: Vec::new(),
             favorite_files: Vec::new(),
             last_file_action: None,
+            window_note: None,
             editor: EditorState::load(),
             dock_layout: initial_dock_layout(),
             dock_saved: None,
@@ -415,6 +449,12 @@ enum ExplorerMessage {
     SelectLocation(Location),
     SelectFile(FileKey),
     SetScene(Scene),
+    NewWindow,
+    CloseThisWindow,
+    WindowObserved(WindowEvent),
+    WindowCloseRequested,
+    WindowCloseConfirmed,
+    WindowCloseVetoed,
     SetShowHidden(bool),
     SetFileFilter(String),
     NewFolder,
@@ -495,6 +535,62 @@ impl Component for ExplorerComponent {
                 {
                     self.selected_file = None;
                 }
+            }
+            ExplorerMessage::NewWindow => {
+                let serial = NEXT_WINDOW_SERIAL.fetch_add(1, Ordering::Relaxed);
+                context.windows().open(secondary_window(self.scene, serial));
+                self.last_file_action = Some(format!("Opened window explorer-secondary-{serial}"));
+            }
+            ExplorerMessage::CloseThisWindow => {
+                // The imperative close path: unconditional, bypassing the
+                // close-request interception (which governs user gestures).
+                context.windows().close(&self.window_id);
+            }
+            ExplorerMessage::WindowObserved(event) => {
+                let observed = match event {
+                    WindowEvent::Focused => Some("focused"),
+                    WindowEvent::Resigned => Some("resigned"),
+                    WindowEvent::Resized(_) | WindowEvent::Moved(_) => None,
+                };
+                if let Some(observed) = observed {
+                    self.window_note =
+                        Some(format!("window {observed}: {}", self.window_id.as_str()));
+                }
+            }
+            ExplorerMessage::WindowCloseRequested => {
+                if self.scene == Scene::Editor {
+                    // The dirty-ish state: an editor session lives in this
+                    // window, so the deferred close is answered only after
+                    // an explicit decision through the confirm sheet.
+                    context.dialogs().alert(
+                        Alert::new(
+                            format!("Close \u{201c}{}\u{201d}?", self.editor.file_name()),
+                            "The editor session in this window will end and unsaved \
+                             changes will be discarded.",
+                        )
+                        .button(
+                            "Cancel",
+                            DialogButtonRole::Cancel,
+                            ExplorerMessage::WindowCloseVetoed,
+                        )
+                        .button(
+                            "Close",
+                            DialogButtonRole::Destructive,
+                            ExplorerMessage::WindowCloseConfirmed,
+                        )
+                        .default_button(0),
+                    );
+                } else {
+                    // The interception is declared per-state; a request that
+                    // arrives as the scene leaves the editor is honored.
+                    context.windows().confirm_close(&self.window_id);
+                }
+            }
+            ExplorerMessage::WindowCloseConfirmed => {
+                context.windows().confirm_close(&self.window_id);
+            }
+            ExplorerMessage::WindowCloseVetoed => {
+                context.windows().veto_close(&self.window_id);
             }
             ExplorerMessage::NewFolder => {
                 self.last_file_action =
@@ -903,130 +999,149 @@ fn main_window(scene: Scene) -> WindowSpec {
         toolbar: if content_fit_probe {
             Vec::new()
         } else {
-            vec![
-                ToolbarItem::action_group(
-                    "navigation",
-                    "Navigation",
-                    "Move backward or forward through location history",
-                    ToolbarPlacement::Leading,
-                    [
-                        ToolbarAction::new(
-                            "back",
-                            "Back",
-                            Symbol::Back,
-                            "Return to the previous location",
-                            announce("navigate-back"),
-                        ),
-                        ToolbarAction::new(
-                            "forward",
-                            "Forward",
-                            Symbol::Forward,
-                            "Move to the next location",
-                            announce("navigate-forward"),
-                        )
-                        .enabled(false),
-                    ],
-                ),
-                ToolbarItem::new(
-                    "add-folder",
-                    "New Folder",
-                    Symbol::Add,
-                    "Create a folder in the current location",
-                    ToolbarPlacement::Leading,
-                    announce("new-folder"),
-                ),
-                ToolbarItem::selection_group(
-                    "view-mode",
-                    "View",
-                    "Choose the file presentation",
-                    ToolbarPlacement::Center,
-                    [
-                        ToolbarChoice::new("grid", "Grid", Symbol::Grid),
-                        ToolbarChoice::new("list", "List", Symbol::List),
-                        ToolbarChoice::new("columns", "Columns", Symbol::Columns),
-                        ToolbarChoice::new("gallery", "Gallery", Symbol::Gallery),
-                    ],
-                    "list",
-                    |selection| eprintln!("view-mode={selection}"),
-                )
-                .group_display(ToolbarGroupDisplay::Expanded),
-                ToolbarItem::menu(
-                    "arrange",
-                    "Arrange",
-                    Symbol::Sort,
-                    "Sort and group the file list",
-                    ToolbarPlacement::Trailing,
-                    [
-                        MenuEntry::item(
-                            MenuItem::new("sort-name", "Name", announce("sort-name"))
-                                .symbol(Symbol::List)
-                                .help("Sort by name")
-                                .chord(shortcut("Primary+Shift+N")),
-                        ),
-                        MenuEntry::item(
-                            MenuItem::new(
-                                "sort-modified",
-                                "Date Modified",
-                                announce("sort-modified"),
-                            )
-                            .symbol(Symbol::Refresh)
-                            .help("Sort by modification date"),
-                        ),
-                        MenuEntry::separator(),
-                        MenuEntry::item(
-                            MenuItem::new("group-kind", "Group by Kind", announce("group-kind"))
-                                .symbol(Symbol::Columns)
-                                .help("Group files by kind"),
-                        ),
-                    ],
-                ),
-                ToolbarItem::action_group(
-                    "file-actions",
-                    "File Actions",
-                    "Share, tag, or open more actions",
-                    ToolbarPlacement::Trailing,
-                    [
-                        ToolbarAction::new(
-                            "share",
-                            "Share",
-                            Symbol::Share,
-                            "Share the selected file",
-                            announce("share"),
-                        ),
-                        ToolbarAction::new(
-                            "tag",
-                            "Tags",
-                            Symbol::Tag,
-                            "Tag the selected file",
-                            announce("tag"),
-                        ),
-                        ToolbarAction::new(
-                            "more",
-                            "More",
-                            Symbol::More,
-                            "More actions for the selected file",
-                            announce("more"),
-                        ),
-                    ],
-                ),
-                ToolbarItem::search(
-                    "search",
-                    "Search",
-                    "",
-                    "Search",
-                    "Search files",
-                    "Search files in Remote Project",
-                    ToolbarPlacement::Trailing,
-                    |query| eprintln!("search={query}"),
-                ),
-            ]
+            explorer_toolbar()
         },
         content: WindowContent::component(ExplorerComponent::new(scene)),
     }
 }
 
+/// The explorer's native toolbar, shared by the main window and every
+/// runtime-opened window.
+fn explorer_toolbar() -> Vec<ToolbarItem> {
+    vec![
+        ToolbarItem::action_group(
+            "navigation",
+            "Navigation",
+            "Move backward or forward through location history",
+            ToolbarPlacement::Leading,
+            [
+                ToolbarAction::new(
+                    "back",
+                    "Back",
+                    Symbol::Back,
+                    "Return to the previous location",
+                    announce("navigate-back"),
+                ),
+                ToolbarAction::new(
+                    "forward",
+                    "Forward",
+                    Symbol::Forward,
+                    "Move to the next location",
+                    announce("navigate-forward"),
+                )
+                .enabled(false),
+            ],
+        ),
+        ToolbarItem::new(
+            "add-folder",
+            "New Folder",
+            Symbol::Add,
+            "Create a folder in the current location",
+            ToolbarPlacement::Leading,
+            announce("new-folder"),
+        ),
+        ToolbarItem::selection_group(
+            "view-mode",
+            "View",
+            "Choose the file presentation",
+            ToolbarPlacement::Center,
+            [
+                ToolbarChoice::new("grid", "Grid", Symbol::Grid),
+                ToolbarChoice::new("list", "List", Symbol::List),
+                ToolbarChoice::new("columns", "Columns", Symbol::Columns),
+                ToolbarChoice::new("gallery", "Gallery", Symbol::Gallery),
+            ],
+            "list",
+            |selection| eprintln!("view-mode={selection}"),
+        )
+        .group_display(ToolbarGroupDisplay::Expanded),
+        ToolbarItem::menu(
+            "arrange",
+            "Arrange",
+            Symbol::Sort,
+            "Sort and group the file list",
+            ToolbarPlacement::Trailing,
+            [
+                MenuEntry::item(
+                    MenuItem::new("sort-name", "Name", announce("sort-name"))
+                        .symbol(Symbol::List)
+                        .help("Sort by name")
+                        .chord(shortcut("Primary+Shift+N")),
+                ),
+                MenuEntry::item(
+                    MenuItem::new("sort-modified", "Date Modified", announce("sort-modified"))
+                        .symbol(Symbol::Refresh)
+                        .help("Sort by modification date"),
+                ),
+                MenuEntry::separator(),
+                MenuEntry::item(
+                    MenuItem::new("group-kind", "Group by Kind", announce("group-kind"))
+                        .symbol(Symbol::Columns)
+                        .help("Group files by kind"),
+                ),
+            ],
+        ),
+        ToolbarItem::action_group(
+            "file-actions",
+            "File Actions",
+            "Share, tag, or open more actions",
+            ToolbarPlacement::Trailing,
+            [
+                ToolbarAction::new(
+                    "share",
+                    "Share",
+                    Symbol::Share,
+                    "Share the selected file",
+                    announce("share"),
+                ),
+                ToolbarAction::new(
+                    "tag",
+                    "Tags",
+                    Symbol::Tag,
+                    "Tag the selected file",
+                    announce("tag"),
+                ),
+                ToolbarAction::new(
+                    "more",
+                    "More",
+                    Symbol::More,
+                    "More actions for the selected file",
+                    announce("more"),
+                ),
+            ],
+        ),
+        ToolbarItem::search(
+            "search",
+            "Search",
+            "",
+            "Search",
+            "Search files",
+            "Search files in Remote Project",
+            ToolbarPlacement::Trailing,
+            |query| eprintln!("search={query}"),
+        ),
+    ]
+}
+
+/// Builds one runtime-opened explorer window: a full explorer (content,
+/// toolbar, menu bar) whose component starts in the opener's scene.
+fn secondary_window(scene: Scene, serial: u32) -> WindowSpec {
+    WindowSpec {
+        id: WindowId::new(format!("explorer-secondary-{serial}")),
+        // Superseded on the first render by the component's reconciled
+        // window_title declaration.
+        title: "Rinka Explorer".to_owned(),
+        kind: WindowKind::Main,
+        initial_size: Size::new(1120.0, 720.0),
+        minimum_size: Size::new(760.0, 520.0),
+        toolbar_display: ToolbarDisplay::IconOnly,
+        toolbar: explorer_toolbar(),
+        content: WindowContent::component(ExplorerComponent::secondary(scene, serial)),
+    }
+}
+
 fn explorer_content(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) -> Element {
-    let root = mount_pattern(
+    let mut root = mount_pattern(
         UiPattern::NavigationWorkspace {
             sidebar_collapsible: true,
             inspector_collapsible: true,
@@ -1039,14 +1154,57 @@ fn explorer_content(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessag
     )
     .with_key("explorer-workspace")
     .accelerators(explorer_accelerators(model, dispatch.clone()));
-    // The menu bar is declared only where a host realizes it: the AppKit
-    // host installs it as NSApplication.mainMenu, while the GTK and WinUI
-    // hosts currently reject a declared bar with a typed diagnostic
-    // (`reports/app-menu-bar`).
+    // The menu bar and the window lifecycle surface are declared only where
+    // a host realizes them: the AppKit host installs the bar as
+    // NSApplication.mainMenu and delivers window events through its window
+    // delegate, while the GTK and WinUI hosts currently reject these
+    // declarations with typed diagnostics (`reports/app-menu-bar`,
+    // `reports/dynamic-window-management`).
     if cfg!(target_os = "macos") {
+        let observe = dispatch.clone();
+        root = root.on_window_event(move |event| {
+            // Only focus transitions become messages: resize and move
+            // events arrive continuously during native drags, and this
+            // consumer has no state derived from them, so it does not pay
+            // an update-render cycle per geometry tick.
+            if matches!(event, WindowEvent::Focused | WindowEvent::Resigned) {
+                observe.emit(ExplorerMessage::WindowObserved(event));
+            }
+        });
+        if model.scene == Scene::Editor {
+            // Close interception is reconciled state: only a window holding
+            // a live editor session intercepts its close; every other scene
+            // keeps the fully native close path.
+            let close_requested = dispatch.clone();
+            root = root.on_close_request(move || {
+                close_requested.emit(ExplorerMessage::WindowCloseRequested);
+            });
+        }
+        if model.secondary {
+            // Runtime-opened windows title themselves from their own scene
+            // state; the reconciled declaration retitles the native window
+            // live as the scene changes.
+            root = root.window_title(format!(
+                "Rinka Explorer \u{2014} {}",
+                scene_title(model.scene)
+            ));
+        }
         root.menu_bar(explorer_menu_bar(model, dispatch))
     } else {
         root
+    }
+}
+
+/// Human-readable scene name used by the secondary windows' live titles.
+const fn scene_title(scene: Scene) -> &'static str {
+    match scene {
+        Scene::Ready => "Ready",
+        Scene::Empty => "Empty",
+        Scene::Busy => "Busy",
+        Scene::Error => "Error",
+        Scene::Canvas => "Canvas",
+        Scene::Editor => "Editor",
+        Scene::Dock => "Dock",
     }
 }
 
@@ -1063,6 +1221,7 @@ fn shortcut(text: &'static str) -> KeyChord {
 /// stays table-owned so it keeps the defer-to-typing policy a native menu
 /// key equivalent cannot express.
 fn explorer_menu_bar(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) -> MenuBar {
+    let new_window = dispatch.clone();
     let new_folder = dispatch.clone();
     let show_hidden = model.show_hidden;
     let hidden = dispatch.clone();
@@ -1085,13 +1244,23 @@ fn explorer_menu_bar(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessa
             "File",
             [
                 MenuBarEntry::item(
+                    MenuItem::new("file-new-window", "New Window", move || {
+                        new_window.emit(ExplorerMessage::NewWindow);
+                    })
+                    .help("Open another explorer window")
+                    // Primary+N belongs to New Window, the platform's
+                    // new-window convention (Overshell's R10 shape); New
+                    // Folder keeps a distinct chord below.
+                    .chord(shortcut("Primary+N")),
+                ),
+                MenuBarEntry::item(
                     MenuItem::new("file-new-folder", "New Folder", move || {
                         new_folder.emit(ExplorerMessage::NewFolder);
                     })
                     .help("Create a folder in the current location")
                     // Folders can only be created while the listing is live.
                     .enabled(model.scene == Scene::Ready)
-                    .chord(shortcut("Primary+N")),
+                    .chord(shortcut("Primary+Alt+N")),
                 ),
                 MenuBarEntry::separator(),
                 MenuBarEntry::standard(StandardItem::CloseWindow),
@@ -1166,6 +1335,9 @@ fn explorer_accelerators(
     let ready = dispatch.clone();
     let empty = dispatch.clone();
     let error = dispatch.clone();
+    let editor = dispatch.clone();
+    let new_window = dispatch.clone();
+    let close_now = dispatch.clone();
     let hidden = dispatch.clone();
     let show_hidden = model.show_hidden;
     vec![
@@ -1197,6 +1369,21 @@ fn explorer_accelerators(
                 column_id: "name".to_owned(),
                 direction: SortDirection::Ascending,
             }));
+        }),
+        // Menu-owned like the scene chords (File > New Window claims it);
+        // declared as the delivery path for hosts without a realized bar.
+        Accelerator::new("new-window", shortcut("Primary+N"), move || {
+            new_window.emit(ExplorerMessage::NewWindow);
+        }),
+        // The editor scene has no menu item, so its chord is table-owned.
+        Accelerator::new("scene-editor", shortcut("Primary+4"), move || {
+            editor.emit(ExplorerMessage::SetScene(Scene::Editor));
+        }),
+        // Programmatic close of this window from a component message,
+        // bypassing close interception. Deliberately distinct from Cmd+W,
+        // which stays the native, interceptable close gesture.
+        Accelerator::new("window-close-now", shortcut("Primary+Alt+W"), move || {
+            close_now.emit(ExplorerMessage::CloseThisWindow);
         }),
     ]
 }
@@ -1332,6 +1519,13 @@ fn directory_content(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessa
             label(note.clone())
                 .text_role(TextRole::Secondary)
                 .with_key("clipboard-note"),
+        );
+    }
+    if let Some(note) = &model.window_note {
+        status_children.push(
+            label(note.clone())
+                .text_role(TextRole::Secondary)
+                .with_key("window-note"),
         );
     }
     status_children.push(spacer(true, false).with_key("status-space"));
@@ -2596,7 +2790,10 @@ mod tests {
         DialogButtonRole, DialogDescription, DialogOutcome, Dispatch, PlatformServices, Renderer,
         UpdateContext, WindowContent, WindowRuntime,
     };
-    use rinka_headless::{FakeClipboard, FakeDialogPresenter, HeadlessBackend};
+    use rinka_headless::{
+        CloseRequestOutcome, FakeClipboard, FakeDialogPresenter, HeadlessBackend,
+        HeadlessWindowHost,
+    };
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -2739,6 +2936,7 @@ mod tests {
         assert_eq!(bar.menus[3].role, MenuBarMenuRole::Window);
         assert_eq!(bar.menus[4].role, MenuBarMenuRole::Help);
         assert!(bar.find_item("file-new-folder").expect("declared").enabled);
+        assert!(bar.find_item("file-new-window").expect("declared").enabled);
         assert!(bar.find_item("view-scene-ready").expect("declared").checked);
         assert!(!bar.find_item("view-scene-empty").expect("declared").checked);
 
@@ -2923,6 +3121,128 @@ mod tests {
             assert_eq!(layout.tab_ids(), ["editor", "canvas"]);
         });
         assert!(runtime.take_error().is_none());
+    }
+
+    #[test]
+    fn a_new_window_message_opens_a_second_explorer_through_the_window_service() {
+        let host = HeadlessWindowHost::new();
+        host.open(super::main_window(Scene::Ready))
+            .expect("open the main window");
+        let fake = FakeClipboard::new();
+        let received = Rc::new(RefCell::new(Vec::new()));
+        let sink = received.clone();
+        let dispatch = Dispatch::from_handler(move |message| sink.borrow_mut().push(message));
+        let services = PlatformServices::new(fake.handle()).with_window_service(host.service());
+        let context = UpdateContext::new(dispatch, services);
+        let mut component = ExplorerComponent::new(Scene::Ready);
+
+        component.update(ExplorerMessage::NewWindow, &context);
+
+        let ids = host.open_ids();
+        assert_eq!(ids.len(), 2);
+        assert!(ids[1].as_str().starts_with("explorer-secondary-"));
+        // The new window took focus, and the opener recorded the action.
+        assert_eq!(host.focused(), Some(ids[1].clone()));
+        assert!(
+            component
+                .last_file_action
+                .as_deref()
+                .is_some_and(|note| note.starts_with("Opened window explorer-secondary-"))
+        );
+        // On the host that realizes the declaration, the secondary titles
+        // itself from its own scene state from the first render.
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                host.title_of(&ids[1]).as_deref(),
+                Some("Rinka Explorer \u{2014} Ready")
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_editor_window_vetoes_its_close_once_then_confirms_through_the_sheet() {
+        let presenter = FakeDialogPresenter::new();
+        let dialog_presenter = presenter.clone();
+        let host = HeadlessWindowHost::new().with_services(move || {
+            PlatformServices::default().with_dialog_service(dialog_presenter.clone())
+        });
+        host.open(super::main_window(Scene::Editor))
+            .expect("open the editor window");
+        let id = rinka::WindowId::new("explorer-main");
+
+        // The user's close gesture is deferred behind the confirm sheet.
+        assert_eq!(
+            host.request_close(&id).expect("request close"),
+            CloseRequestOutcome::Deferred
+        );
+        assert_eq!(presenter.presented_count(), 1);
+        let Some(DialogDescription::Alert(alert)) = presenter.description(0) else {
+            panic!("expected the close confirmation alert");
+        };
+        assert_eq!(alert.buttons[0].label, "Cancel");
+        assert_eq!(alert.buttons[0].role, DialogButtonRole::Cancel);
+        assert_eq!(alert.buttons[1].label, "Close");
+        assert_eq!(alert.buttons[1].role, DialogButtonRole::Destructive);
+        assert_eq!(alert.default_button, Some(0));
+
+        // Cancel vetoes: the window survives its own close request.
+        assert!(presenter.deliver(0, DialogOutcome::ButtonChosen(0)));
+        assert!(host.is_open(&id));
+        assert!(host.pending_close_ids().is_empty());
+
+        // A second gesture confirmed through the sheet closes the window.
+        assert_eq!(
+            host.request_close(&id).expect("request close"),
+            CloseRequestOutcome::Deferred
+        );
+        assert!(presenter.deliver(1, DialogOutcome::ButtonChosen(1)));
+        assert!(!host.is_open(&id));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_ready_window_keeps_the_fully_native_close_path() {
+        let host = HeadlessWindowHost::new();
+        host.open(super::main_window(Scene::Ready))
+            .expect("open the main window");
+
+        // No editor session, no interception: the gesture closes natively.
+        assert_eq!(
+            host.request_close(&rinka::WindowId::new("explorer-main"))
+                .expect("request close"),
+            CloseRequestOutcome::ClosedImmediately
+        );
+        assert!(host.open_ids().is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_secondary_window_declares_its_title_from_scene_state() {
+        let mut component = ExplorerComponent::secondary(Scene::Ready, 900);
+        let recording = Dispatch::from_handler(|_message: ExplorerMessage| {});
+        assert_eq!(
+            component.view(recording.clone()).window_title_model(),
+            Some("Rinka Explorer \u{2014} Ready")
+        );
+        // The declared title is a pure function of the scene state.
+        let fake = FakeClipboard::new();
+        let context = UpdateContext::new(recording.clone(), PlatformServices::new(fake.handle()));
+        component.update(ExplorerMessage::SetScene(Scene::Editor), &context);
+        let view = component.view(recording);
+        assert_eq!(
+            view.window_title_model(),
+            Some("Rinka Explorer \u{2014} Editor")
+        );
+        // The editor scene also declares close interception; other scenes
+        // (asserted above through the main window) do not.
+        assert!(view.declares_close_request());
+        // The main window keeps its launch title.
+        let main = ExplorerComponent::new(Scene::Ready);
+        let main_view = main.view(Dispatch::from_handler(|_message: ExplorerMessage| {}));
+        assert_eq!(main_view.window_title_model(), None);
+        assert!(!main_view.declares_close_request());
+        assert!(main_view.declares_window_events());
     }
 
     #[test]

@@ -29,6 +29,7 @@ struct ApplicationDelegateIvars {
     dialog_probe: RefCell<Option<DialogProbe>>,
     text_input_probe: RefCell<Option<TextInputProbe>>,
     menu_bar_probe: RefCell<Option<MenuBarProbe>>,
+    window_lifecycle_probe: RefCell<Option<WindowLifecycleProbe>>,
 }
 
 /// Everything a closed window still owns natively.
@@ -82,6 +83,21 @@ struct DialogProbe {
     step: usize,
     attempts: usize,
     passed: bool,
+}
+
+/// In-process driver for the runtime window lifecycle evidence: opening a
+/// second explorer window through the real File > New Window key
+/// equivalent, live retitling from scene state, a programmatic close
+/// bypassing interception, and the close-request veto/confirm protocol
+/// answered through the real confirmation sheet.
+#[derive(Clone, Debug)]
+struct WindowLifecycleProbe {
+    step: usize,
+    attempts: usize,
+    passed: bool,
+    /// Identity of the first runtime-opened window, kept to prove the
+    /// reopened window carries a fresh identity.
+    first_secondary: Option<WindowId>,
 }
 
 /// In-process driver for the application menu bar evidence: structure,
@@ -401,6 +417,7 @@ define_class!(
             self.begin_text_input_probe();
             self.begin_menu_bar_probe();
             self.begin_dock_probe();
+            self.begin_window_lifecycle_probe();
         }
 
         #[unsafe(method(runTransitionProbe:))]
@@ -441,6 +458,11 @@ define_class!(
         #[unsafe(method(runMenuBarProbe:))]
         fn run_menu_bar_probe(&self, _sender: *mut AnyObject) {
             self.advance_menu_bar_probe();
+        }
+
+        #[unsafe(method(runWindowLifecycleProbe:))]
+        fn run_window_lifecycle_probe(&self, _sender: *mut AnyObject) {
+            self.advance_window_lifecycle_probe();
         }
 
         #[unsafe(method(windowDidBecomeKey:))]
