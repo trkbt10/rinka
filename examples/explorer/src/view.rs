@@ -7,9 +7,8 @@ use rinka::{
     PanelBehavior, PointerEvent, PointerPhase, Size, SortDirection, Spacing, StatusTone, Submenu,
     Symbol, TableColumn, TableSort, TextRole, ToolbarAction, ToolbarChoice, ToolbarDisplay,
     ToolbarGroupDisplay, ToolbarItem, ToolbarPlacement, UiPattern, UpdateContext, WindowContent,
-    WindowId,
-    WindowKind, WindowSpec, button, canvas, column, image, label, list, list_row, mount_pattern,
-    progress, row, separator, spacer, status, toggle,
+    WindowId, WindowKind, WindowSpec, button, canvas, column, image, label, list, list_row,
+    mount_pattern, progress, row, separator, spacer, status, toggle,
 };
 
 /// Meaningful UI state used by the consumer verification matrix.

@@ -1112,6 +1112,115 @@ impl ApplicationDelegate {
         })
     }
 
+    /// Reads the general pasteboard through the host's own service.
+    fn probe_general_pasteboard_text(&self) -> Option<String> {
+        let clipboard = rinka_core::Clipboard::new(PasteboardClipboard::general());
+        let delivered = Rc::new(RefCell::new(None));
+        let sink = delivered.clone();
+        clipboard.read_text(move |result| *sink.borrow_mut() = Some(result));
+        delivered
+            .borrow_mut()
+            .take()
+            .and_then(Result::ok)
+            .flatten()
+    }
+
+    /// Returns the toolbar's native search field, if one is installed.
+    fn probe_search_field(&self) -> Option<Id> {
+        let window = self.ivars().windows.borrow().first().cloned()?;
+        // SAFETY: The retained NSWindow owns its toolbar; the search field is
+        // retained by its NSSearchToolbarItem and this wrapper adds its own
+        // balanced retain.
+        unsafe {
+            let toolbar: *mut AnyObject = msg_send![window.as_object(), toolbar];
+            let toolbar = NonNull::new(toolbar)?;
+            let items: *mut AnyObject = msg_send![toolbar.as_ref(), items];
+            let count: usize = msg_send![items, count];
+            for index in 0..count {
+                let item: *mut AnyObject = msg_send![items, objectAtIndex: index];
+                let is_search: bool =
+                    msg_send![item, isKindOfClass: objc2::class!(NSSearchToolbarItem)];
+                if !is_search {
+                    continue;
+                }
+                let field: *mut AnyObject = msg_send![item, searchField];
+                return NonNull::new(field).map(|field| Id::from_borrowed(field.as_ptr()));
+            }
+        }
+        None
+    }
+
+    /// Returns the window's focused field editor, if native text has focus.
+    fn probe_focused_field_editor(&self) -> Option<Id> {
+        let window = self.ivars().windows.borrow().first().cloned()?;
+        // SAFETY: The first responder is read on the main thread and only
+        // returned once the NSText class membership check has passed.
+        unsafe {
+            let responder: *mut AnyObject = msg_send![window.as_object(), firstResponder];
+            let responder = NonNull::new(responder)?;
+            let is_text: bool =
+                msg_send![responder.as_ref(), isKindOfClass: objc2::class!(NSText)];
+            is_text.then(|| Id::from_borrowed(responder.as_ptr()))
+        }
+    }
+
+    /// Fills the toolbar search field with `marker` and selects its content,
+    /// making the field's editor the first responder — the setup for proving
+    /// that the native text field's own Copy still works with no rinka code
+    /// in the path.
+    fn prepare_probe_search_field_selection(&self, marker: &str) -> bool {
+        let Some(window) = self.ivars().windows.borrow().first().cloned() else {
+            return false;
+        };
+        let Some(field) = self.probe_search_field() else {
+            return false;
+        };
+        // SAFETY: selectText: begins a field editor session on the main
+        // thread and selects the programmatically set content.
+        unsafe {
+            set_string(field.as_object(), SET_STRING_VALUE, marker);
+            let _: () = msg_send![field.as_object(), selectText: std::ptr::null::<AnyObject>()];
+            first_responder_is_text_input(window.as_object())
+        }
+    }
+
+    /// Sends the standard Copy action to the window's focused field editor —
+    /// the action a Cmd+C key equivalent resolves to for native text.
+    ///
+    /// Requiring no application activation keeps the probe deterministic on
+    /// a busy desktop and means it never steals the user's focus; the
+    /// key-routing half (an unmatched chord falls through to focused text)
+    /// is the accelerator probe's landed evidence.
+    fn copy_probe_search_field_selection(&self) -> bool {
+        let Some(editor) = self.probe_focused_field_editor() else {
+            return false;
+        };
+        // SAFETY: NSText's copy: writes the selection to the general
+        // pasteboard on the main thread without requiring key status.
+        unsafe {
+            let _: () = msg_send![editor.as_object(), copy: std::ptr::null::<AnyObject>()];
+        }
+        true
+    }
+
+    /// Clears the search field, focuses it, and sends the standard Paste
+    /// action — the action a Cmd+V key equivalent resolves to — returning
+    /// the field editor's text after the paste.
+    fn paste_probe_search_field(&self) -> Option<String> {
+        let field = self.probe_search_field()?;
+        // SAFETY: selectText: re-establishes the field editor session; the
+        // editor's paste: inserts the general pasteboard's text and its
+        // string is copied out on the main thread.
+        unsafe {
+            set_string(field.as_object(), SET_STRING_VALUE, "");
+            let _: () = msg_send![field.as_object(), selectText: std::ptr::null::<AnyObject>()];
+            let editor = self.probe_focused_field_editor()?;
+            let _: () = msg_send![editor.as_object(), paste: std::ptr::null::<AnyObject>()];
+            let value: *mut AnyObject = msg_send![editor.as_object(), string];
+            Some(rust_string(value))
+        }
+    }
+
     fn fail_clipboard_probe_step(&self, step: &'static str, detail: &str) {
         eprintln!("Rinka clipboard probe step={step} {detail} pass=false");
         if let Some(probe) = self.ivars().clipboard_probe.borrow_mut().as_mut() {
@@ -1120,14 +1229,18 @@ impl ApplicationDelegate {
         self.finish_clipboard_probe();
     }
 
-    /// Presses Paste Path first — reading the seeded text — and Copy Path
-    /// second, so the app-written path is what the wrapping script's final
-    /// pbpaste observes. Both observations are in-process (mounted props),
-    /// making the probe immune to desktop focus contention; the
+    /// Drives the live interop sequence: Paste Path reads the seeded text;
+    /// the focused search field's standard Copy action proves the native
+    /// text field's own clipboard behavior still works with no rinka code
+    /// in the path; Copy Path runs last so the app-written path is what the
+    /// wrapping script's final pbpaste observes. All observations are
+    /// in-process (mounted props and the pasteboard service); the
     /// cross-process interop itself is asserted by the script through
     /// pbcopy and pbpaste.
     fn advance_clipboard_probe(&self) {
         const MAX_MAIN_LOOP_TURNS: usize = 200;
+        /// Selected search-field content the native Copy must transfer.
+        const NATIVE_FIELD_MARKER: &str = "rinka native field copy 検証";
         let Some((step, attempts)) = self
             .ivars()
             .clipboard_probe
@@ -1170,14 +1283,59 @@ impl ApplicationDelegate {
             1 => match self.probe_clipboard_note() {
                 Some(note) => {
                     eprintln!("Rinka clipboard probe step=paste observed={note:?} pass=true");
+                    advance();
+                }
+                None if attempts < MAX_MAIN_LOOP_TURNS => retry(),
+                None => self.fail_clipboard_probe_step("paste", "note_timeout"),
+            },
+            2 => {
+                if !self.prepare_probe_search_field_selection(NATIVE_FIELD_MARKER) {
+                    self.fail_clipboard_probe_step(
+                        "native_field_copy",
+                        "search_field_not_focused",
+                    );
+                    return;
+                }
+                if !self.copy_probe_search_field_selection() {
+                    self.fail_clipboard_probe_step(
+                        "native_field_copy",
+                        "field_editor_not_focused",
+                    );
+                    return;
+                }
+                advance();
+            }
+            3 => match self.probe_general_pasteboard_text() {
+                Some(text) if text == NATIVE_FIELD_MARKER => {
+                    eprintln!(
+                        "Rinka clipboard probe step=native_field_copy observed={text:?} pass=true"
+                    );
+                    match self.paste_probe_search_field() {
+                        Some(pasted) if pasted == NATIVE_FIELD_MARKER => {
+                            eprintln!(
+                                "Rinka clipboard probe step=native_field_paste observed={pasted:?} pass=true"
+                            );
+                        }
+                        observed => {
+                            self.fail_clipboard_probe_step(
+                                "native_field_paste",
+                                &format!("observed={observed:?}"),
+                            );
+                            return;
+                        }
+                    }
+                    self.unfocus_probe_text_input();
                     if !self.press_probe_button("copy-path") {
                         self.fail_clipboard_probe_step("press_copy", "button_not_mounted");
                         return;
                     }
                     advance();
                 }
-                None if attempts < MAX_MAIN_LOOP_TURNS => retry(),
-                None => self.fail_clipboard_probe_step("paste", "note_timeout"),
+                _ if attempts < MAX_MAIN_LOOP_TURNS => retry(),
+                observed => self.fail_clipboard_probe_step(
+                    "native_field_copy",
+                    &format!("observed={observed:?}"),
+                ),
             },
             _ => match self.probe_clipboard_note() {
                 Some(note) if note.starts_with("Copied ") => {

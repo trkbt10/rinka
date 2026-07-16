@@ -3,3 +3,4 @@
 /verification
 .DS_Store
 /.target-wt
+/.target-ci/

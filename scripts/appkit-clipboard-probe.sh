@@ -3,12 +3,18 @@ set -euo pipefail
 
 # Live pbcopy/pbpaste interop verification for the clipboard service
 # (reports/clipboard-access). The probe process presses the explorer's real
-# "Paste Path" and "Copy Path" buttons in-process — no synthetic input, no
-# AX attachment, nothing that can land in another window — while this
-# script owns the cross-process assertions through pbcopy and pbpaste:
+# "Paste Path" and "Copy Path" buttons in-process and drives the focused
+# search field's own standard Copy action — no global input injection, no
+# focus stealing, no AX attachment, nothing that can land in another
+# window — while this script owns the cross-process assertions through
+# pbcopy and pbpaste:
 #
 #   1. pbcopy seeds text  → the app's Paste Path must read it back.
-#   2. the app's Copy Path writes the current directory path → pbpaste
+#   2. the app's focused native search field performs its own Copy and
+#      Paste (the actions Cmd+C / Cmd+V key equivalents resolve to) → the
+#      selection must round-trip through the pasteboard with no rinka code
+#      in that path.
+#   3. the app's Copy Path writes the current directory path → pbpaste
 #      must reproduce it.
 #
 # The user's clipboard text is saved before seeding and restored on every
@@ -45,6 +51,15 @@ fi
 status=0
 if ! grep -qF "Rinka clipboard probe step=paste observed=\"Clipboard: $seed\" pass=true" "$log"; then
   echo "FAIL: the app did not read back the pbcopy-seeded text" >&2
+  status=1
+fi
+
+if ! grep -qF "Rinka clipboard probe step=native_field_copy observed=\"rinka native field copy 検証\" pass=true" "$log"; then
+  echo "FAIL: the native search field's own Copy did not reach the pasteboard" >&2
+  status=1
+fi
+if ! grep -qF "Rinka clipboard probe step=native_field_paste observed=\"rinka native field copy 検証\" pass=true" "$log"; then
+  echo "FAIL: the native search field's own Paste did not read the pasteboard" >&2
   status=1
 fi
 
