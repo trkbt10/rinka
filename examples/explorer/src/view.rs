@@ -4,14 +4,14 @@ use crate::editor::EditorState;
 use rinka::{
     Accelerator, Alert, Align, ApplicationSpec, Axis, ButtonRole, CanvasColor, CanvasPoint,
     CanvasRect, CanvasSize, ClipboardError, CollectionPattern, Component, ControlSize,
-    DialogButtonRole, DialogOutcome, Dispatch, DrawScene, Element, ImageContent, ImageScaling,
-    Justify, KeyChord, LineWidth, MenuEntry, MenuItem, OpenPanelDescription, PanelBehavior,
-    PointerEvent, PointerPhase, SavePanelDescription, Size, SortDirection, Spacing, StatusTone,
-    Submenu, Symbol, TableColumn, TableSort, TextChange, TextRole, TextSelection, ToolbarAction,
-    ToolbarChoice, ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem, ToolbarPlacement, UiPattern,
-    UpdateContext, WindowContent, WindowId, WindowKind, WindowSpec, button, canvas, column, image,
-    label, list, list_row, mount_pattern, progress, row, separator, spacer, status, text_area,
-    toggle,
+    DialogButtonRole, DialogOutcome, Dispatch, DragPayload, DrawScene, Element, FileDrop,
+    FilePromise, ImageContent, ImageScaling, Justify, KeyChord, LineWidth, MenuEntry, MenuItem,
+    OpenPanelDescription, PanelBehavior, PointerEvent, PointerPhase, SavePanelDescription, Size,
+    SortDirection, Spacing, StatusTone, Submenu, Symbol, TableColumn, TableSort, TextChange,
+    TextRole, TextSelection, ToolbarAction, ToolbarChoice, ToolbarDisplay, ToolbarGroupDisplay,
+    ToolbarItem, ToolbarPlacement, UiPattern, UpdateContext, WindowContent, WindowId, WindowKind,
+    WindowSpec, button, canvas, column, image, label, list, list_row, mount_pattern, progress, row,
+    separator, spacer, status, text_area, toggle,
 };
 use std::path::PathBuf;
 
@@ -134,11 +134,24 @@ struct FileRecord {
     symbol: Symbol,
 }
 
+/// Typed payload identifier for a file row dragged within the explorer.
+const EXPLORER_FILE_PAYLOAD_TYPE: &str = "jp.bunko.rinka.explorer.file";
+
+/// Returns whether the explorer attaches its drag-and-drop declarations.
+///
+/// The escape hatch exists for the accessibility-equivalence evidence of
+/// `reports/drag-and-drop`: extracting the AX tree with and without drag
+/// modifiers from otherwise identical processes.
+fn drag_interactions_enabled() -> bool {
+    std::env::var_os("RINKA_EXPLORER_DISABLE_DRAG").is_none()
+}
+
 struct ExplorerComponent {
     scene: Scene,
     location: Location,
     selected_file: Option<FileKey>,
     clipboard_note: Option<String>,
+    drag_note: Option<String>,
     show_hidden: bool,
     favorites_expanded: bool,
     locations_expanded: bool,
@@ -173,6 +186,7 @@ impl ExplorerComponent {
                 FileKey::Cargo
             }),
             clipboard_note: None,
+            drag_note: None,
             show_hidden: false,
             favorites_expanded: true,
             locations_expanded: true,
@@ -313,6 +327,9 @@ enum ExplorerMessage {
     EditorJumpEnd,
     EditorRehighlight,
     EditorReload,
+    FilesDropped(FileDrop),
+    FileExported(Result<String, String>),
+    MoveFileToLocation(Location, String),
 }
 
 impl Component for ExplorerComponent {
@@ -434,6 +451,34 @@ impl Component for ExplorerComponent {
                 context.clipboard().read_text(move |result| {
                     dispatch.emit(ExplorerMessage::ClipboardRead(result));
                 });
+            }
+            ExplorerMessage::FilesDropped(drop) => {
+                let names = drop
+                    .paths
+                    .iter()
+                    .map(|path| {
+                        path.file_name().map_or_else(
+                            || path.display().to_string(),
+                            |name| name.to_string_lossy().into_owned(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.drag_note = Some(format!(
+                    "Dropped {} file(s) at ({:.0}, {:.0}): {names}",
+                    drop.paths.len(),
+                    drop.position.x,
+                    drop.position.y,
+                ));
+            }
+            ExplorerMessage::FileExported(result) => {
+                self.drag_note = Some(match result {
+                    Ok(file_name) => format!("Exported {file_name}"),
+                    Err(reason) => format!("Export failed: {reason}"),
+                });
+            }
+            ExplorerMessage::MoveFileToLocation(location, file) => {
+                self.drag_note = Some(format!("Moved {file} to {}", location.title()));
             }
             ExplorerMessage::ClipboardRead(result) => {
                 self.clipboard_note = Some(match result {
@@ -846,7 +891,8 @@ fn location_row(
     } else {
         location.title()
     };
-    list_row(
+    let move_dispatch = dispatch.clone();
+    let mut row = list_row(
         title,
         None,
         Some(symbol),
@@ -854,8 +900,17 @@ fn location_row(
         false,
         title,
         move || dispatch.emit(ExplorerMessage::SelectLocation(location)),
-    )
-    .with_key(format!(
+    );
+    if drag_interactions_enabled() {
+        // Dropping a file row onto a sidebar location moves it there.
+        row = row.on_drop_accepting([EXPLORER_FILE_PAYLOAD_TYPE], move |drop| {
+            move_dispatch.emit(ExplorerMessage::MoveFileToLocation(
+                location,
+                drop.payload.id().to_owned(),
+            ));
+        });
+    }
+    row.with_key(format!(
         "location-{}",
         title.to_lowercase().replace(' ', "-")
     ))
@@ -871,6 +926,9 @@ fn directory_content(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessa
         label(model.last_file_action.clone().unwrap_or_default())
             .text_role(TextRole::Secondary)
             .with_key("file-action-note"),
+        label(model.drag_note.clone().unwrap_or_default())
+            .text_role(TextRole::Secondary)
+            .with_key("drag-note"),
     ];
     if let Some(note) = &model.clipboard_note {
         status_children.push(
@@ -929,14 +987,22 @@ fn directory_content(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessa
 fn scene_body(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) -> Element {
     match model.scene {
         Scene::Ready => file_list(model, dispatch),
-        Scene::Empty => column([status(
-            "This folder is empty",
-            "Create a folder or drop files here to begin.",
-            StatusTone::Empty,
-        )
-        .with_key("directory-empty")])
-        .justify(Justify::Center)
-        .with_key("directory-empty-layout"),
+        Scene::Empty => {
+            // The status copy promises "drop files here"; the enclosing
+            // column is the region that keeps that promise.
+            let mut layout = column([status(
+                "This folder is empty",
+                "Create a folder or drop files here to begin.",
+                StatusTone::Empty,
+            )
+            .with_key("directory-empty")])
+            .justify(Justify::Center);
+            if drag_interactions_enabled() {
+                layout = layout
+                    .on_file_drop(move |drop| dispatch.emit(ExplorerMessage::FilesDropped(drop)));
+            }
+            layout.with_key("directory-empty-layout")
+        }
         Scene::Busy => column([
             status(
                 "Refreshing Remote Project",
@@ -1262,7 +1328,8 @@ fn file_list(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) -> 
             TableColumn::new(id, title).sortable(true)
         }
     };
-    list(format!("Files in {}", model.location.title()), rows)
+    let drop_dispatch = dispatch.clone();
+    let mut files = list(format!("Files in {}", model.location.title()), rows)
         .table_columns([
             column("name", "Name"),
             column("modified", "Date Modified"),
@@ -1270,8 +1337,12 @@ fn file_list(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) -> 
             column("kind", "Kind"),
         ])
         .collection_pattern(CollectionPattern::DataTable)
-        .on_sort_change(move |sort| dispatch.emit(ExplorerMessage::SetSort(sort)))
-        .with_key("file-list")
+        .on_sort_change(move |sort| dispatch.emit(ExplorerMessage::SetSort(sort)));
+    if drag_interactions_enabled() {
+        files =
+            files.on_file_drop(move |drop| drop_dispatch.emit(ExplorerMessage::FilesDropped(drop)));
+    }
+    files.with_key("file-list")
 }
 
 /// Builds the display rows for a record set, appending the native row for a
@@ -1372,6 +1443,27 @@ fn file_context_menu(
     ]
 }
 
+/// Builds the lazily materialized export promise for one file row.
+///
+/// The exported file is a small generated manifest, not the (fictional)
+/// remote bytes; its content is written only when a destination accepts the
+/// drop, and the outcome always returns to `update` as a message.
+fn file_export_promise(record: FileRecord, dispatch: &Dispatch<ExplorerMessage>) -> FilePromise {
+    let file_name = format!("{}.txt", record.title);
+    let export_dispatch = dispatch.clone();
+    FilePromise::new(file_name.clone(), "public.plain-text", move |path| {
+        let content = format!(
+            "Generated by Rinka Explorer\nfile: {}\nkind: {}\nsize: {}\n",
+            record.title, record.kind, record.size,
+        );
+        let outcome = std::fs::write(path, content).map_err(|error| error.to_string());
+        export_dispatch.emit(ExplorerMessage::FileExported(
+            outcome.clone().map(|()| file_name.clone()),
+        ));
+        outcome
+    })
+}
+
 fn file_row(
     record: FileRecord,
     model: &ExplorerComponent,
@@ -1390,6 +1482,17 @@ fn file_row(
     .table_cells([record.modified, record.size, record.kind])
     .context_menu(file_context_menu(record, model, &dispatch))
     .with_key(format!("file-{:?}", record.key));
+
+    let children = child_file_records(model, record.key);
+    if drag_interactions_enabled() {
+        // Every row moves within the app as a typed payload; non-folder rows
+        // additionally export through a file promise, so one drag session
+        // serves the sidebar move and the Finder export.
+        row = row.drag_payload(DragPayload::new(EXPLORER_FILE_PAYLOAD_TYPE, record.title));
+        if record.kind != "Folder" {
+            row = row.draggable_file(file_export_promise(record, &dispatch));
+        }
+    }
 
     let children = child_file_records(model, record.key);
     if !children.is_empty() {
@@ -1924,6 +2027,79 @@ mod tests {
         assert_eq!(
             component.clipboard_note.as_deref(),
             Some("Clipboard has no text")
+        );
+    }
+
+    #[test]
+    fn dropped_files_reach_the_status_note_with_names_and_position() {
+        let fake = FakeClipboard::new();
+        let (context, _received) = clipboard_context(&fake);
+        let mut component = ExplorerComponent::new(Scene::Ready);
+
+        component.update(
+            ExplorerMessage::FilesDropped(rinka::FileDrop {
+                paths: vec![
+                    std::path::PathBuf::from("/tmp/report.pdf"),
+                    std::path::PathBuf::from("/tmp/photo.png"),
+                ],
+                position: rinka::DropPosition::new(140.4, 60.6),
+            }),
+            &context,
+        );
+
+        assert_eq!(
+            component.drag_note.as_deref(),
+            Some("Dropped 2 file(s) at (140, 61): report.pdf, photo.png")
+        );
+    }
+
+    #[test]
+    fn a_file_promise_materializes_lazily_and_reports_the_export() {
+        let fake = FakeClipboard::new();
+        let (context, received) = clipboard_context(&fake);
+        let mut component = ExplorerComponent::new(Scene::Ready);
+        let dispatch = {
+            let sink = received.clone();
+            rinka::Dispatch::from_handler(move |message| sink.borrow_mut().push(message))
+        };
+        let record = super::file_records(&component)
+            .into_iter()
+            .find(|record| record.key == super::FileKey::Readme)
+            .expect("README.md is listed");
+        let promise = super::file_export_promise(record, &dispatch);
+        let directory =
+            std::env::temp_dir().join(format!("rinka-explorer-export-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("temp export directory");
+        let destination = directory.join(promise.file_name());
+
+        // Nothing materializes before a destination accepts the drop.
+        assert!(!destination.exists());
+        promise.write_to(&destination).expect("export succeeds");
+
+        let content = std::fs::read_to_string(&destination).expect("exported manifest");
+        assert!(content.contains("file: README.md"));
+        drain_into(&mut component, &context, &received);
+        assert_eq!(
+            component.drag_note.as_deref(),
+            Some("Exported README.md.txt")
+        );
+        std::fs::remove_dir_all(&directory).expect("temp export cleanup");
+    }
+
+    #[test]
+    fn a_row_dropped_onto_a_sidebar_location_records_the_move() {
+        let fake = FakeClipboard::new();
+        let (context, _received) = clipboard_context(&fake);
+        let mut component = ExplorerComponent::new(Scene::Ready);
+
+        component.update(
+            ExplorerMessage::MoveFileToLocation(Location::Documents, "README.md".to_owned()),
+            &context,
+        );
+
+        assert_eq!(
+            component.drag_note.as_deref(),
+            Some("Moved README.md to Documents")
         );
     }
 
