@@ -3,8 +3,10 @@
 //! The core stores descriptions and native handles separately. It never draws
 //! controls and never imports an operating-system toolkit.
 
+mod accelerator;
 mod backend;
 mod canvas;
+mod chord;
 mod element;
 mod event;
 mod pattern;
@@ -16,10 +18,17 @@ mod toolbar;
 mod validation;
 mod window;
 
+pub use accelerator::{
+    Accelerator, AcceleratorBindings, AcceleratorDescription, AcceleratorOutcome,
+    AcceleratorRouter, AcceleratorScope, KeyRoutingContext,
+};
 pub use backend::{NativeBackend, PropertyPatch};
 pub use canvas::{
     CanvasColor, CanvasPoint, CanvasRect, CanvasSize, CanvasVector, DrawCommand, DrawScene,
     LineWidth, MonospaceMetrics, PointerButton, PointerEvent, PointerModifiers, PointerPhase,
+};
+pub use chord::{
+    ChordParseError, KeyChord, KeyIdentity, Modifiers, PrimaryModifier, ResolvedModifiers,
 };
 pub use element::{
     Element, Key, button, canvas, column, image, input, label, list, list_row, mount_pattern,

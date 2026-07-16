@@ -1,5 +1,6 @@
 //! Declarative tree invariants checked before native mutation.
 
+use crate::accelerator::AcceleratorScope;
 use crate::{Element, ElementKind};
 use std::collections::HashSet;
 use std::error::Error;
@@ -66,6 +67,20 @@ pub enum TreeError {
         /// Root kind requested by the next component view.
         next: ElementKind,
     },
+    /// Two accelerator entries in the same scope declared the same chord.
+    DuplicateAcceleratorChord {
+        /// Canonical chord text.
+        chord: String,
+        /// Scope containing the collision.
+        scope: AcceleratorScope,
+    },
+    /// An accelerator table violated a structural invariant.
+    InvalidAcceleratorTable {
+        /// Element path used for diagnostics.
+        path: String,
+        /// Human-readable invariant violation.
+        reason: String,
+    },
 }
 
 impl fmt::Display for TreeError {
@@ -102,6 +117,13 @@ impl fmt::Display for TreeError {
                 formatter,
                 "native window root kind must remain stable: mounted {previous:?}, received {next:?}"
             ),
+            Self::DuplicateAcceleratorChord { chord, scope } => write!(
+                formatter,
+                "duplicate accelerator chord '{chord}' in {scope} scope"
+            ),
+            Self::InvalidAcceleratorTable { path, reason } => {
+                write!(formatter, "invalid accelerator table at {path}: {reason}")
+            }
         }
     }
 }
@@ -109,7 +131,51 @@ impl fmt::Display for TreeError {
 impl Error for TreeError {}
 
 pub(crate) fn validate_tree(root: &Element) -> Result<(), TreeError> {
+    validate_accelerator_table(root)?;
     validate_node(root, "root")
+}
+
+fn validate_accelerator_table(root: &Element) -> Result<(), TreeError> {
+    let mut identities = HashSet::new();
+    let mut chords = HashSet::new();
+    for entry in root.accelerator_table() {
+        if entry.id().is_empty() {
+            return Err(TreeError::InvalidAcceleratorTable {
+                path: "root".to_owned(),
+                reason: format!("accelerator for chord '{}' has an empty id", entry.chord()),
+            });
+        }
+        if !identities.insert(entry.id().to_owned()) {
+            return Err(TreeError::InvalidAcceleratorTable {
+                path: "root".to_owned(),
+                reason: format!("duplicate accelerator id '{}'", entry.id()),
+            });
+        }
+        if !chords.insert((entry.declared_scope(), entry.chord())) {
+            return Err(TreeError::DuplicateAcceleratorChord {
+                chord: entry.chord().to_string(),
+                scope: entry.declared_scope(),
+            });
+        }
+    }
+    validate_accelerator_placement(root.children(), "root")
+}
+
+fn validate_accelerator_placement(children: &[Element], path: &str) -> Result<(), TreeError> {
+    for (index, child) in children.iter().enumerate() {
+        let name = child
+            .key()
+            .map_or_else(|| index.to_string(), |key| key.as_str().to_owned());
+        let child_path = format!("{path}/{name}");
+        if !child.accelerator_table().is_empty() {
+            return Err(TreeError::InvalidAcceleratorTable {
+                path: child_path,
+                reason: "accelerators must be declared on the window content root".to_owned(),
+            });
+        }
+        validate_accelerator_placement(child.children(), &child_path)?;
+    }
+    Ok(())
 }
 
 fn validate_node(element: &Element, path: &str) -> Result<(), TreeError> {

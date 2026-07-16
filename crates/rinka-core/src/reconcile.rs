@@ -1,5 +1,6 @@
 //! Keyed reconciliation into retained native objects.
 
+use crate::accelerator::AcceleratorBindings;
 use crate::validation::{TreeError, validate_tree};
 use crate::{Element, EventBindings, NativeBackend, PropertyPatch};
 use std::error::Error;
@@ -78,6 +79,7 @@ impl<H> MountedNode<H> {
 pub struct Renderer<B: NativeBackend> {
     backend: B,
     mounted: Option<MountedNode<B::Handle>>,
+    accelerators: AcceleratorBindings,
     last_stats: RenderStats,
 }
 
@@ -87,14 +89,16 @@ impl<B: NativeBackend> Renderer<B> {
         Self {
             backend,
             mounted: None,
+            accelerators: AcceleratorBindings::default(),
             last_stats: RenderStats::default(),
         }
     }
 
     /// Validates and reconciles a complete next tree.
-    pub fn render(&mut self, next: Element) -> Result<RenderStats, RenderError<B::Error>> {
+    pub fn render(&mut self, mut next: Element) -> Result<RenderStats, RenderError<B::Error>> {
         validate_tree(&next).map_err(RenderError::Tree)?;
         validate_backend(&self.backend, &next).map_err(RenderError::Backend)?;
+        let accelerators = next.take_accelerators();
 
         let root = self.backend.root();
         let mut stats = RenderStats::default();
@@ -111,8 +115,17 @@ impl<B: NativeBackend> Renderer<B> {
                 .map_err(RenderError::Backend)?,
         };
         self.mounted = Some(mounted);
+        self.accelerators.replace(&accelerators);
         self.last_stats = stats;
         Ok(stats)
+    }
+
+    /// Returns the stable accelerator table owned by this renderer.
+    ///
+    /// A platform host connects its native key source to this value once;
+    /// every successful render replaces the entries in place.
+    pub fn accelerator_bindings(&self) -> &AcceleratorBindings {
+        &self.accelerators
     }
 
     /// Returns the adapter.

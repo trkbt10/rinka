@@ -1,5 +1,6 @@
 //! Immutable declarative element descriptions and semantic roles.
 
+use crate::accelerator::Accelerator;
 use crate::event::{EventHandlers, InputHandler};
 use crate::semantics::*;
 use crate::{ActivateHandler, ToggleHandler};
@@ -41,6 +42,7 @@ pub struct Element {
     pub(crate) props: Props,
     pub(crate) children: Vec<Self>,
     pub(crate) handlers: EventHandlers,
+    pub(crate) accelerators: Vec<Accelerator>,
 }
 
 impl Element {
@@ -50,6 +52,7 @@ impl Element {
             props,
             children: Vec::new(),
             handlers: EventHandlers::default(),
+            accelerators: Vec::new(),
         }
     }
 
@@ -59,6 +62,7 @@ impl Element {
             props,
             children: children.into_iter().collect(),
             handlers: EventHandlers::default(),
+            accelerators: Vec::new(),
         }
     }
 
@@ -294,8 +298,28 @@ impl Element {
         self
     }
 
+    /// Declares the window's accelerator table on its content root.
+    ///
+    /// Entries map key chords to messages and are reconciled like every other
+    /// description: re-rendering with different entries adds, removes,
+    /// enables, or disables chords without reconnecting the platform's native
+    /// key source. Validation rejects a table declared below the root.
+    pub fn accelerators(mut self, entries: impl IntoIterator<Item = Accelerator>) -> Self {
+        self.accelerators = entries.into_iter().collect();
+        self
+    }
+
+    /// Returns the declared accelerator table.
+    pub fn accelerator_table(&self) -> &[Accelerator] {
+        &self.accelerators
+    }
+
     pub(crate) fn take_children(&mut self) -> Vec<Self> {
         std::mem::take(&mut self.children)
+    }
+
+    pub(crate) fn take_accelerators(&mut self) -> Vec<Accelerator> {
+        std::mem::take(&mut self.accelerators)
     }
 }
 
@@ -307,6 +331,7 @@ impl fmt::Debug for Element {
             .field("props", &self.props)
             .field("children", &self.children)
             .field("handlers", &self.handlers)
+            .field("accelerators", &self.accelerators)
             .finish()
     }
 }
