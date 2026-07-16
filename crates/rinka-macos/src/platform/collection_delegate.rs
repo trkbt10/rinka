@@ -8,6 +8,8 @@ struct TableRowRecord {
     selected: bool,
     disclosure: bool,
     accessibility_label: String,
+    /// Declarative context menu realized on every cell this row produces.
+    context_menu: Option<ContextMenu>,
     events: EventBindings,
     children: RefCell<Vec<Rc<RefCell<TableRowRecord>>>>,
     outline_identity: Id,
@@ -67,7 +69,7 @@ define_class!(
             };
             let pattern = *self.ivars().pattern.borrow();
             let column_index = table_column_index(column, &self.ivars().columns.borrow());
-            create_table_cell(&record.borrow(), pattern, column_index)
+            create_table_cell(self.mtm(), &record.borrow(), pattern, column_index)
         }
 
         #[unsafe(method(outlineView:numberOfChildrenOfItem:))]
@@ -150,7 +152,7 @@ define_class!(
             };
             let pattern = *self.ivars().pattern.borrow();
             let column_index = table_column_index(column, &self.ivars().columns.borrow());
-            create_table_cell(&record.borrow(), pattern, column_index)
+            create_table_cell(self.mtm(), &record.borrow(), pattern, column_index)
         }
 
         #[unsafe(method(outlineView:isGroupItem:))]
@@ -451,17 +453,20 @@ fn autorelease_id(object: Id) -> *mut AnyObject {
 }
 
 fn create_table_cell(
+    mtm: MainThreadMarker,
     record: &TableRowRecord,
     pattern: CollectionPattern,
     column_index: usize,
 ) -> *mut AnyObject {
     if pattern.presents_columns() && column_index > 0 {
-        return create_table_value_cell(
+        let cell = create_table_value_cell(
             record
                 .cells
                 .get(column_index - 1)
                 .map_or("", String::as_str),
         );
+        attach_record_context_menu(mtm, record, cell);
+        return cell;
     }
     let cell = new_view(objc2::class!(NSTableCellView));
     let title = label_view(&record.title, TextRole::Body);
@@ -541,6 +546,7 @@ fn create_table_cell(
                 &record.accessibility_label,
             );
         }
+        attach_record_context_menu(mtm, record, cell.as_ptr());
         return autorelease_id(cell);
     }
 
@@ -663,7 +669,31 @@ fn create_table_cell(
         }
     }
 
+    attach_record_context_menu(mtm, record, cell.as_ptr());
     autorelease_id(cell)
+}
+
+/// Realizes a row's context menu on one freshly built table cell.
+///
+/// Cells are rebuilt whenever the row reloads, so a menu state change on the
+/// record reaches the native menu through the next reload. The cell retains
+/// the menu, and each menu item retains its own dispatch target.
+fn attach_record_context_menu(
+    mtm: MainThreadMarker,
+    record: &TableRowRecord,
+    cell: *mut AnyObject,
+) {
+    let Some(menu) = record.context_menu.as_ref() else {
+        return;
+    };
+    let Some(cell) = NonNull::new(cell) else {
+        return;
+    };
+    let native = build_context_ns_menu(mtm, menu, &record.events);
+    // SAFETY: The cell is a live NSTableCellView and retains its menu.
+    unsafe {
+        let _: () = msg_send![cell.as_ref(), setMenu: native.as_object()];
+    }
 }
 
 fn create_table_value_cell(value: &str) -> *mut AnyObject {

@@ -439,6 +439,7 @@ fn create_list_row(
         selected: config.selected,
         disclosure: config.disclosure,
         accessibility_label: config.accessibility_label.to_owned(),
+        context_menu: None,
         events,
         children: RefCell::new(Vec::new()),
         outline_identity: new_object(objc2::class!(NSObject)),

@@ -10,7 +10,11 @@ fn label_view(text: &str, role: TextRole) -> Id {
     }
 }
 
-fn apply_patch(handle: &AppKitHandle, patch: &PropertyPatch) -> Result<(), AppKitError> {
+fn apply_patch(
+    mtm: MainThreadMarker,
+    handle: &AppKitHandle,
+    patch: &PropertyPatch,
+) -> Result<(), AppKitError> {
     match patch.props() {
         Props::Label {
             text,
@@ -183,6 +187,7 @@ fn apply_patch(handle: &AppKitHandle, patch: &PropertyPatch) -> Result<(), AppKi
                 record.selected = *selected;
                 record.disclosure = *disclosure;
                 record.accessibility_label.clone_from(accessibility_label);
+                record.context_menu = patch.context_menu().cloned();
             }
             if let Some(list) = list_ancestor(handle) {
                 reload_native_list(&list)?;
@@ -226,6 +231,17 @@ fn apply_patch(handle: &AppKitHandle, patch: &PropertyPatch) -> Result<(), AppKi
                 }
             }
         }
+    }
+    if handle.element_kind() != Some(ElementKind::ListRow)
+        && let Some(events) = handle.0.events.borrow().clone()
+    {
+        reconcile_view_context_menu(
+            mtm,
+            context_menu_owner_view(handle),
+            &handle.0.context_menu,
+            patch.context_menu(),
+            &events,
+        );
     }
     refresh_ancestor_stacks(handle);
     Ok(())

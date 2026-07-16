@@ -21,6 +21,12 @@ struct HandleInner {
     parent: RefCell<Option<Weak<HandleInner>>>,
     justification_views: RefCell<Vec<Id>>,
     justification_constraints: RefCell<Vec<Id>>,
+    /// The most recently realized context-menu model, kept for structure
+    /// comparison when reconciliation patches the retained native menu.
+    context_menu: RefCell<Option<ContextMenu>>,
+    /// The element's stable event binding, kept so a patch that introduces a
+    /// context menu can connect native items to the current handlers.
+    events: RefCell<Option<EventBindings>>,
     auxiliaries: Vec<Id>,
 }
 
@@ -78,6 +84,8 @@ impl AppKitHandle {
             parent: RefCell::new(None),
             justification_views: RefCell::new(Vec::new()),
             justification_constraints: RefCell::new(Vec::new()),
+            context_menu: RefCell::new(None),
+            events: RefCell::new(None),
             auxiliaries,
         }))
     }
@@ -106,6 +114,8 @@ impl AppKitHandle {
             parent: RefCell::new(None),
             justification_views: RefCell::new(Vec::new()),
             justification_constraints: RefCell::new(Vec::new()),
+            context_menu: RefCell::new(None),
+            events: RefCell::new(None),
             auxiliaries,
         }))
     }
@@ -207,7 +217,11 @@ impl NativeBackend for AppKitBackend {
         element: &Element,
         events: EventBindings,
     ) -> Result<Self::Handle, Self::Error> {
-        let handle = create_element(self.mtm, element, events)?;
+        let handle = create_element(self.mtm, element, events.clone())?;
+        *handle.0.events.borrow_mut() = Some(events.clone());
+        if let Some(menu) = element.context_menu_model() {
+            install_element_context_menu(self.mtm, &handle, menu, &events);
+        }
         if handle.element_kind() == Some(ElementKind::List) {
             if self.split_restore_pending.get()
                 && let Some(delegate) = handle.0.table_delegate.borrow().as_ref()
@@ -228,7 +242,7 @@ impl NativeBackend for AppKitBackend {
     }
 
     fn apply(&mut self, handle: &Self::Handle, patch: &PropertyPatch) -> Result<(), Self::Error> {
-        apply_patch(handle, patch)?;
+        apply_patch(self.mtm, handle, patch)?;
         let list_handles = list_registry_handles(&self.list_registry);
         refresh_semantic_sidebar_for_handle(handle, &list_handles);
         Ok(())
@@ -593,6 +607,44 @@ fn create_element(
             accessibility_label,
             events,
         )),
+    }
+}
+
+/// Attaches a context-menu model at creation time.
+///
+/// A list row realizes its menu on the table cells the delegate builds, so
+/// the model is stored on the row record; every other element realizes it on
+/// its owning native view.
+fn install_element_context_menu(
+    mtm: MainThreadMarker,
+    handle: &AppKitHandle,
+    menu: &ContextMenu,
+    events: &EventBindings,
+) {
+    if let Some(record) = handle.0.list_row.borrow().as_ref() {
+        record.borrow_mut().context_menu = Some(menu.clone());
+        return;
+    }
+    reconcile_view_context_menu(
+        mtm,
+        context_menu_owner_view(handle),
+        &handle.0.context_menu,
+        Some(menu),
+        events,
+    );
+}
+
+/// Returns the native view that owns an element's context menu.
+///
+/// A list attaches the menu to its table so the contextual interaction covers
+/// the whole scrolling content area; every other element uses its outer
+/// semantic view, and the responder chain serves clicks on menu-less
+/// descendants.
+fn context_menu_owner_view(handle: &AppKitHandle) -> &AnyObject {
+    if handle.element_kind() == Some(ElementKind::List) {
+        handle.host_view()
+    } else {
+        handle.view()
     }
 }
 

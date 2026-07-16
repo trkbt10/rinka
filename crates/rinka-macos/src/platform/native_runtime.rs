@@ -175,6 +175,9 @@ enum TargetKind {
     Input,
     Toggle,
     ToolbarSelection(Vec<String>),
+    /// Context-menu item activation dispatching one item identity through the
+    /// element's stable event binding.
+    ContextMenu(String),
 }
 
 #[derive(Debug)]
@@ -217,6 +220,11 @@ define_class!(
                     if let Some(identifier) = identifiers.get(index) {
                         self.ivars().events.emit_input(identifier.clone());
                     }
+                }
+                TargetKind::ContextMenu(item_id) => {
+                    // The semantic model re-validates enabled state, so a
+                    // stale native item cannot dispatch a refused command.
+                    let _ = self.ivars().events.emit_context_menu_activation(item_id);
                 }
             }
         }
@@ -660,7 +668,10 @@ fn create_ns_menu_item(
     let key = ns_string("");
     // SAFETY: The item is created through the designated initializer and the
     // selector target has the matching one-argument signature. State value 1
-    // is NSControlStateValueOn, the public checkmark constant.
+    // is NSControlStateValueOn, the public checkmark constant. NSMenuItem
+    // holds its target weakly, so the item also retains the target through
+    // its strong representedObject property; the target then lives exactly
+    // as long as the native item that fires it.
     unsafe {
         let allocated: *mut AnyObject = msg_send![objc2::class!(NSMenuItem), alloc];
         let pointer: *mut AnyObject = msg_send![allocated,
@@ -670,6 +681,7 @@ fn create_ns_menu_item(
         ];
         let native = Id::from_owned(pointer);
         let _: () = msg_send![native.as_object(), setTarget: &**target];
+        let _: () = msg_send![native.as_object(), setRepresentedObject: &**target];
         let _: () =
             msg_send![native.as_object(), setEnabled: ancestors_enabled && item.enabled];
         let _: () = msg_send![native.as_object(), setState: isize::from(item.checked)];
@@ -688,6 +700,169 @@ fn create_ns_menu_item(
         // model. The resolved fallback contract is documented in
         // reports/context-menus.
         native
+    }
+}
+
+/// Builds the native menu realizing one element's context-menu model.
+///
+/// Every item targets the element's stable event binding with its own item
+/// identity, so reconciliation refreshes activation behavior without touching
+/// the native menu. Each NSMenuItem retains its target through
+/// representedObject, so the menu owns its complete dispatch chain.
+fn build_context_ns_menu(
+    mtm: MainThreadMarker,
+    menu: &ContextMenu,
+    events: &EventBindings,
+) -> Id {
+    let native = create_ns_menu("");
+    let mut targets = Vec::new();
+    let events = events.clone();
+    append_ns_menu_entries(
+        &native,
+        &menu.entries,
+        true,
+        &mut targets,
+        &move |item: &MenuItem| {
+            ActionTarget::new(
+                mtm,
+                events.clone(),
+                TargetKind::ContextMenu(item.id.clone()),
+            )
+        },
+    );
+    // The items retain the targets through representedObject; no external
+    // owner is required.
+    drop(targets);
+    native
+}
+
+/// Returns whether two menu models share one native structure, meaning the
+/// retained NSMenu can be updated in place instead of being replaced.
+fn menu_structure_matches(current: &[MenuEntry], next: &[MenuEntry]) -> bool {
+    current.len() == next.len()
+        && current.iter().zip(next).all(|pair| match pair {
+            (MenuEntry::Separator, MenuEntry::Separator) => true,
+            (MenuEntry::Item(current), MenuEntry::Item(next)) => current.id == next.id,
+            (MenuEntry::Submenu(current), MenuEntry::Submenu(next)) => {
+                current.id == next.id && menu_structure_matches(&current.entries, &next.entries)
+            }
+            _ => false,
+        })
+}
+
+/// Updates a structurally unchanged retained NSMenu to the next declarative
+/// state: titles, enabled state, checkmarks, help, and symbols.
+///
+/// # Safety
+///
+/// `menu` must be a live NSMenu whose item sequence matches `entries`, as
+/// established by [`menu_structure_matches`] against the previously realized
+/// model.
+unsafe fn refresh_ns_menu_items(menu: &AnyObject, entries: &[MenuEntry], ancestors_enabled: bool) {
+    for (index, entry) in entries.iter().enumerate() {
+        let Ok(index) = isize::try_from(index) else {
+            return;
+        };
+        // SAFETY: The caller guarantees the index is within the item count.
+        let native: *mut AnyObject = unsafe { msg_send![menu, itemAtIndex: index] };
+        let Some(native) = NonNull::new(native) else {
+            continue;
+        };
+        // SAFETY: The item is a live NSMenuItem owned by the retained menu.
+        unsafe {
+            match entry {
+                MenuEntry::Separator => {}
+                MenuEntry::Item(item) => {
+                    let title = ns_string(&item.label);
+                    let _: () = msg_send![native.as_ref(), setTitle: title.as_object()];
+                    let _: () = msg_send![
+                        native.as_ref(),
+                        setEnabled: ancestors_enabled && item.enabled
+                    ];
+                    let _: () = msg_send![native.as_ref(), setState: isize::from(item.checked)];
+                    set_string(native.as_ref(), "setToolTip:", &item.help);
+                    match item.symbol.and_then(system_image) {
+                        Some(image) => {
+                            let _: () = msg_send![native.as_ref(), setImage: image.as_object()];
+                        }
+                        None => {
+                            let _: () = msg_send![
+                                native.as_ref(),
+                                setImage: std::ptr::null::<AnyObject>()
+                            ];
+                        }
+                    }
+                }
+                MenuEntry::Submenu(submenu) => {
+                    let enabled = ancestors_enabled && submenu.enabled;
+                    let title = ns_string(&submenu.label);
+                    let _: () = msg_send![native.as_ref(), setTitle: title.as_object()];
+                    let _: () = msg_send![native.as_ref(), setEnabled: enabled];
+                    let nested: *mut AnyObject = msg_send![native.as_ref(), submenu];
+                    if let Some(nested) = NonNull::new(nested) {
+                        refresh_ns_menu_items(nested.as_ref(), &submenu.entries, enabled);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Realizes, updates, or removes the context menu retained by a native view.
+///
+/// AppKit then owns the contextual interactions: secondary click and
+/// ctrl-click pop the view's menu at the pointer, and the accessibility
+/// show-menu action opens it without one. A structure-preserving model change
+/// updates the retained NSMenu in place so even an open menu reflects the
+/// next declarative state; a structural change replaces the menu object.
+fn reconcile_view_context_menu(
+    mtm: MainThreadMarker,
+    view: &AnyObject,
+    stored: &RefCell<Option<ContextMenu>>,
+    next: Option<&ContextMenu>,
+    events: &EventBindings,
+) {
+    let mut stored = stored.borrow_mut();
+    match (stored.as_ref(), next) {
+        (None, None) => {}
+        (Some(_), None) => {
+            // SAFETY: The receiver is a live NSView; a nil menu removes the
+            // contextual interaction.
+            unsafe {
+                let _: () = msg_send![view, setMenu: std::ptr::null::<AnyObject>()];
+            }
+            *stored = None;
+        }
+        (None, Some(menu)) => {
+            let native = build_context_ns_menu(mtm, menu, events);
+            // SAFETY: The receiver is a live NSView and retains its menu.
+            unsafe {
+                let _: () = msg_send![view, setMenu: native.as_object()];
+            }
+            *stored = Some(menu.clone());
+        }
+        (Some(current), Some(menu)) => {
+            if current == menu {
+                return;
+            }
+            if menu_structure_matches(&current.entries, &menu.entries) {
+                // SAFETY: The view's retained menu was realized from the
+                // stored model, whose structure matches the next model.
+                unsafe {
+                    let native: *mut AnyObject = msg_send![view, menu];
+                    if let Some(native) = NonNull::new(native) {
+                        refresh_ns_menu_items(native.as_ref(), &menu.entries, true);
+                    }
+                }
+            } else {
+                let native = build_context_ns_menu(mtm, menu, events);
+                // SAFETY: The receiver is a live NSView and retains its menu.
+                unsafe {
+                    let _: () = msg_send![view, setMenu: native.as_object()];
+                }
+            }
+            *stored = Some(menu.clone());
+        }
     }
 }
 
