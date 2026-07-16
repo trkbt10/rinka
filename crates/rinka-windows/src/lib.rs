@@ -99,6 +99,15 @@ pub fn validate_element(element: &Element) -> Result<(), WindowsDiagnostic> {
             capability: "bitmap image element",
         });
     }
+    if element.context_menu_model().is_some() {
+        // The classic Win32 probe has no context-menu realization yet; the
+        // typed rejection and its follow-up are recorded in
+        // reports/context-menus.
+        return Err(WindowsDiagnostic::UnsupportedCapability {
+            element: element.kind(),
+            capability: "context menu",
+        });
+    }
     Ok(())
 }
 
@@ -183,6 +192,21 @@ mod tests {
             Err(WindowsDiagnostic::UnsupportedCapability {
                 element: ElementKind::Stack,
                 capability: "declared accelerator table",
+            })
+        );
+    }
+
+    #[test]
+    fn a_context_menu_is_a_typed_diagnostic() {
+        let element =
+            button("Action", "Action", || {}).context_menu([rinka_core::MenuEntry::item(
+                rinka_core::MenuItem::new("open", "Open", || {}),
+            )]);
+        assert_eq!(
+            validate_element(&element),
+            Err(WindowsDiagnostic::UnsupportedCapability {
+                element: ElementKind::Button,
+                capability: "context menu",
             })
         );
     }

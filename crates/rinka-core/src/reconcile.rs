@@ -204,7 +204,7 @@ fn reconcile_node<B: NativeBackend>(
     }
 
     stats.reused += 1;
-    if let Some(patch) = PropertyPatch::between(current.descriptor.props(), next.props()) {
+    if let Some(patch) = PropertyPatch::between(&current.descriptor, &next) {
         backend.apply(&current.handle, &patch)?;
         stats.patched += 1;
     }

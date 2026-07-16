@@ -78,6 +78,15 @@ fn validate_element(element: &Element) -> Result<(), GtkError> {
             "declared accelerator tables are not yet delivered by the GTK host".to_owned(),
         ));
     }
+    if element.context_menu_model().is_some() {
+        // The GTK realization (GtkPopoverMenu over the gio::Menu model, with
+        // per-row popovers inside the ColumnView factories) does not exist
+        // yet; the typed rejection and its follow-up are recorded in
+        // reports/context-menus.
+        return Err(GtkError(
+            "GTK adapter does not realize element context menus yet".to_owned(),
+        ));
+    }
     if let Some(name) = element.props().accessibility_name() {
         require_text("accessibility name", name)?;
     }

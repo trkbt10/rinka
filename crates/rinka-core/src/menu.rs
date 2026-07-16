@@ -200,6 +200,119 @@ impl MenuEntry {
     }
 }
 
+/// Declarative context menu attached to one element.
+///
+/// The platform opens it through its contextual interaction (secondary click,
+/// ctrl-click, keyboard menu key, or the accessibility show-menu action) and
+/// anchors it at the interaction point. Item and submenu identities share one
+/// namespace across the whole menu; reconciliation validates their uniqueness
+/// before any native mutation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContextMenu {
+    /// Entries in display order.
+    pub entries: Vec<MenuEntry>,
+}
+
+impl ContextMenu {
+    /// Creates a context menu from entries in display order.
+    pub fn new(entries: impl IntoIterator<Item = MenuEntry>) -> Self {
+        Self {
+            entries: entries.into_iter().collect(),
+        }
+    }
+
+    /// Finds an item by identity regardless of its enabled state.
+    pub fn find_item(&self, id: &str) -> Option<&MenuItem> {
+        find_item_in(&self.entries, id)
+    }
+
+    /// Resolves the activation handler for one item identity.
+    ///
+    /// Returns `None` for an unknown item, a disabled item, or an item inside
+    /// a disabled submenu: a command the native menu would refuse must not
+    /// dispatch through the semantic model either.
+    pub fn activation_handler(&self, id: &str) -> Option<ActivateHandler> {
+        activation_handler_in(&self.entries, id, true)
+    }
+
+    /// Checks that every item and submenu identity is non-empty and unique
+    /// within the whole menu.
+    pub(crate) fn validate_identities(&self) -> Result<(), String> {
+        let mut seen = std::collections::HashSet::new();
+        validate_identities_in(&self.entries, &mut seen)
+    }
+}
+
+fn find_item_in<'entries>(entries: &'entries [MenuEntry], id: &str) -> Option<&'entries MenuItem> {
+    for entry in entries {
+        match entry {
+            MenuEntry::Item(item) if item.id == id => return Some(item),
+            MenuEntry::Item(_) | MenuEntry::Separator => {}
+            MenuEntry::Submenu(submenu) => {
+                if let Some(found) = find_item_in(&submenu.entries, id) {
+                    return Some(found);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn activation_handler_in(
+    entries: &[MenuEntry],
+    id: &str,
+    ancestors_enabled: bool,
+) -> Option<ActivateHandler> {
+    for entry in entries {
+        match entry {
+            MenuEntry::Item(item) if item.id == id => {
+                return (ancestors_enabled && item.enabled).then(|| item.on_activate.clone());
+            }
+            MenuEntry::Item(_) | MenuEntry::Separator => {}
+            MenuEntry::Submenu(submenu) => {
+                if let Some(handler) = activation_handler_in(
+                    &submenu.entries,
+                    id,
+                    ancestors_enabled && submenu.enabled,
+                ) {
+                    return Some(handler);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn validate_identities_in<'entries>(
+    entries: &'entries [MenuEntry],
+    seen: &mut std::collections::HashSet<&'entries str>,
+) -> Result<(), String> {
+    for entry in entries {
+        match entry {
+            MenuEntry::Item(item) => require_unique_identity(&item.id, seen)?,
+            MenuEntry::Separator => {}
+            MenuEntry::Submenu(submenu) => {
+                require_unique_identity(&submenu.id, seen)?;
+                validate_identities_in(&submenu.entries, seen)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn require_unique_identity<'entries>(
+    id: &'entries str,
+    seen: &mut std::collections::HashSet<&'entries str>,
+) -> Result<(), String> {
+    if id.is_empty() {
+        return Err("menu entry identity must not be empty".to_owned());
+    }
+    if !seen.insert(id) {
+        return Err(format!("menu entry identity '{id}' is duplicated"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{MenuEntry, MenuItem, MenuItemRole, Submenu};

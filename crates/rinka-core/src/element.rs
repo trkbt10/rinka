@@ -2,6 +2,7 @@
 
 use crate::accelerator::Accelerator;
 use crate::event::{EventHandlers, InputHandler};
+use crate::menu::{ContextMenu, MenuEntry};
 use crate::semantics::*;
 use crate::{ActivateHandler, ToggleHandler};
 use std::fmt;
@@ -312,6 +313,23 @@ impl Element {
     /// Returns the declared accelerator table.
     pub fn accelerator_table(&self) -> &[Accelerator] {
         &self.accelerators
+    }
+
+    /// Attaches a declarative native context menu to this element.
+    ///
+    /// The platform opens the menu through its contextual interaction
+    /// (secondary click, ctrl-click, keyboard menu key, or the accessibility
+    /// show-menu action), anchored at the interaction point. Activation
+    /// dispatches through the element's stable event binding, so handlers
+    /// stay current across renders without reconnecting the native menu.
+    pub fn context_menu(mut self, entries: impl IntoIterator<Item = MenuEntry>) -> Self {
+        self.handlers.context_menu = Some(ContextMenu::new(entries));
+        self
+    }
+
+    /// Returns the attached declarative context menu model.
+    pub fn context_menu_model(&self) -> Option<&ContextMenu> {
+        self.handlers.context_menu.as_ref()
     }
 
     pub(crate) fn take_children(&mut self) -> Vec<Self> {

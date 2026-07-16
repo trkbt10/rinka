@@ -1,5 +1,6 @@
 //! Stable event slots shared by the reconciler and native adapters.
 
+use crate::menu::ContextMenu;
 use crate::{PointerEvent, TableSort};
 use std::cell::RefCell;
 use std::fmt;
@@ -24,6 +25,9 @@ pub struct EventHandlers {
     pub(crate) toggle: Option<ToggleHandler>,
     pub(crate) sort: Option<SortHandler>,
     pub(crate) pointer: Option<PointerHandler>,
+    /// The context-menu model rides with the handlers because its items carry
+    /// activation closures that must stay current across renders.
+    pub(crate) context_menu: Option<ContextMenu>,
 }
 
 impl fmt::Debug for EventHandlers {
@@ -35,6 +39,7 @@ impl fmt::Debug for EventHandlers {
             .field("toggle", &self.toggle.is_some())
             .field("sort", &self.sort.is_some())
             .field("pointer", &self.pointer.is_some())
+            .field("context_menu", &self.context_menu.is_some())
             .finish()
     }
 }
@@ -46,6 +51,7 @@ struct EventSlots {
     toggle: Option<ToggleHandler>,
     sort: Option<SortHandler>,
     pointer: Option<PointerHandler>,
+    context_menu: Option<ContextMenu>,
 }
 
 /// Stable native signal target whose handlers can be replaced after a render.
@@ -64,6 +70,7 @@ impl EventBindings {
             toggle: handlers.toggle.clone(),
             sort: handlers.sort.clone(),
             pointer: handlers.pointer.clone(),
+            context_menu: handlers.context_menu.clone(),
         })))
     }
 
@@ -75,6 +82,7 @@ impl EventBindings {
             toggle: None,
             sort: None,
             pointer: None,
+            context_menu: None,
         })))
     }
 
@@ -86,6 +94,7 @@ impl EventBindings {
             toggle: None,
             sort: None,
             pointer: None,
+            context_menu: None,
         })))
     }
 
@@ -96,6 +105,7 @@ impl EventBindings {
         slots.toggle.clone_from(&handlers.toggle);
         slots.sort.clone_from(&handlers.sort);
         slots.pointer.clone_from(&handlers.pointer);
+        slots.context_menu.clone_from(&handlers.context_menu);
     }
 
     /// Emits an activation event through the current handler.
@@ -137,6 +147,27 @@ impl EventBindings {
             handler(value);
         }
     }
+
+    /// Dispatches the activation of one context-menu item through the current
+    /// model and returns whether a handler ran.
+    ///
+    /// An unknown item, a disabled item, and an item inside a disabled
+    /// submenu do not dispatch: a command the native menu refuses must not
+    /// fire through the semantic model either.
+    pub fn emit_context_menu_activation(&self, item_id: &str) -> bool {
+        let handler = self
+            .0
+            .borrow()
+            .context_menu
+            .as_ref()
+            .and_then(|menu| menu.activation_handler(item_id));
+        if let Some(handler) = handler {
+            handler();
+            true
+        } else {
+            false
+        }
+    }
 }
 
 impl fmt::Debug for EventBindings {
@@ -149,6 +180,7 @@ impl fmt::Debug for EventBindings {
             .field("toggle", &slots.toggle.is_some())
             .field("sort", &slots.sort.is_some())
             .field("pointer", &slots.pointer.is_some())
+            .field("context_menu", &slots.context_menu.is_some())
             .finish()
     }
 }

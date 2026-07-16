@@ -1,6 +1,8 @@
 //! Deterministic retained-tree adapter used by tests and surface extraction.
 
-use rinka_core::{Element, EventBindings, MonospaceMetrics, NativeBackend, PropertyPatch, Props};
+use rinka_core::{
+    ContextMenu, Element, EventBindings, MonospaceMetrics, NativeBackend, PropertyPatch, Props,
+};
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
@@ -66,6 +68,7 @@ pub enum Operation {
 struct Node {
     key: Option<String>,
     props: Props,
+    context_menu: Option<ContextMenu>,
     events: EventBindings,
     children: Vec<Handle>,
 }
@@ -107,6 +110,7 @@ impl HeadlessBackend {
                     align: rinka_core::Align::Stretch,
                     justify: rinka_core::Justify::Start,
                 },
+                context_menu: None,
                 events: EventBindings::default(),
                 children: Vec::new(),
             },
@@ -144,6 +148,13 @@ impl HeadlessBackend {
     /// Returns current native properties.
     pub fn props_of(&self, handle: Handle) -> Option<&Props> {
         self.nodes.get(&handle).map(|node| &node.props)
+    }
+
+    /// Returns the current native context-menu model.
+    pub fn context_menu_of(&self, handle: Handle) -> Option<&ContextMenu> {
+        self.nodes
+            .get(&handle)
+            .and_then(|node| node.context_menu.as_ref())
     }
 
     /// Returns the stable event target.
@@ -205,6 +216,7 @@ impl NativeBackend for HeadlessBackend {
             Node {
                 key: element.key().map(|key| key.as_str().to_owned()),
                 props: props.clone(),
+                context_menu: element.context_menu_model().cloned(),
                 events,
                 children: Vec::new(),
             },
@@ -216,6 +228,7 @@ impl NativeBackend for HeadlessBackend {
     fn apply(&mut self, handle: &Self::Handle, patch: &PropertyPatch) -> Result<(), Self::Error> {
         let node = self.node_mut(handle)?;
         node.props.clone_from(patch.props());
+        node.context_menu = patch.context_menu().cloned();
         self.operations.push(Operation::Patch {
             handle: *handle,
             patch: patch.clone(),

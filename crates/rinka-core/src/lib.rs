@@ -38,7 +38,7 @@ pub use element::{
 pub use event::{
     ActivateHandler, EventBindings, InputHandler, PointerHandler, SortHandler, ToggleHandler,
 };
-pub use menu::{MenuEntry, MenuItem, MenuItemRole, Submenu};
+pub use menu::{ContextMenu, MenuEntry, MenuItem, MenuItemRole, Submenu};
 pub use pattern::{PatternRegion, UiPattern};
 pub use projection::{ProjectedHandle, WindowProjection};
 pub use reconcile::{MountedNode, RenderError, RenderStats, Renderer};

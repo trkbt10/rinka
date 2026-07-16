@@ -60,6 +60,14 @@ pub enum WinUiDiagnostic {
         /// Stable window identity.
         window_id: String,
     },
+    /// Window content declared a semantic capability this host does not
+    /// realize yet.
+    UnsupportedContentCapability {
+        /// Stable window identity.
+        window_id: String,
+        /// Stable capability identifier.
+        capability: &'static str,
+    },
     /// Common content was structurally invalid at initial projection time.
     Projection(String),
     /// The Windows App SDK host returned a native error.
@@ -97,6 +105,13 @@ impl fmt::Display for WinUiDiagnostic {
             Self::UnsupportedAccelerators { window_id } => write!(
                 formatter,
                 "window '{window_id}' declares an accelerator table the WinUI host does not deliver yet"
+            ),
+            Self::UnsupportedContentCapability {
+                window_id,
+                capability,
+            } => write!(
+                formatter,
+                "window '{window_id}' content requests unsupported capability '{capability}'"
             ),
             Self::Projection(message) => write!(formatter, "common projection failed: {message}"),
             Self::Native(message) => write!(formatter, "WinUI 3 host failed: {message}"),
@@ -167,9 +182,10 @@ fn validate_application(application: &ApplicationSpec) -> Result<(), WinUiDiagno
 ///
 /// The walk sees each window's initial component view; content that only a
 /// later state transition declares is outside this startup validation.
-/// Neither the owned-drawing canvas nor the bitmap image element is
-/// implemented by this host yet; both are rejected with typed diagnostics
-/// and never replaced with a visually unrelated control.
+/// The owned-drawing canvas, the bitmap image element, and element context
+/// menus (the WinUI `MenuFlyout` realization is recorded in
+/// reports/context-menus) are rejected with typed diagnostics and never
+/// replaced with a visually unrelated control.
 fn validate_content(window_id: &str, element: &Element) -> Result<(), WinUiDiagnostic> {
     if element.kind() == ElementKind::Canvas {
         return Err(WinUiDiagnostic::UnsupportedElementCapability {
@@ -184,6 +200,12 @@ fn validate_content(window_id: &str, element: &Element) -> Result<(), WinUiDiagn
         return Err(WinUiDiagnostic::UnsupportedElement {
             window_id: window_id.to_owned(),
             element: ElementKind::Image,
+        });
+    }
+    if element.context_menu_model().is_some() {
+        return Err(WinUiDiagnostic::UnsupportedContentCapability {
+            window_id: window_id.to_owned(),
+            capability: "context menu",
         });
     }
     for child in element.children() {
@@ -350,6 +372,22 @@ mod tests {
             validate_application(&application(vec![shortcut_window])),
             Err(WinUiDiagnostic::UnsupportedAccelerators {
                 window_id: "main".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn content_context_menus_are_a_typed_diagnostic() {
+        let mut with_menu = window("main", WindowKind::Main);
+        with_menu.content =
+            WindowContent::from(label("File").context_menu([rinka_core::MenuEntry::item(
+                rinka_core::MenuItem::new("open", "Open", || {}),
+            )]));
+        assert_eq!(
+            validate_application(&application(vec![with_menu])),
+            Err(WinUiDiagnostic::UnsupportedContentCapability {
+                window_id: "main".to_owned(),
+                capability: "context menu",
             })
         );
     }

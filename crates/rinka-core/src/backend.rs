@@ -1,24 +1,42 @@
 //! Native host mutation contract and property snapshots.
 
+use crate::menu::ContextMenu;
 use crate::{Element, Props};
 use std::fmt;
 
-/// Complete next [`Props`] snapshot for an existing native object.
+/// Complete next semantic snapshot for an existing native object.
 ///
-/// This avoids duplicating every property variant in a mutation hierarchy.
+/// The patch carries the full next [`Props`] and the full next context-menu
+/// model instead of duplicating every property variant in a mutation
+/// hierarchy. Menu comparison uses the model's declarative equality, which
+/// intentionally ignores activation handlers: handlers reach the adapter
+/// through the stable event binding on every render regardless of patching.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PropertyPatch {
     next: Props,
+    next_context_menu: Option<ContextMenu>,
 }
 
 impl PropertyPatch {
-    pub(crate) fn between(old: &Props, new: &Props) -> Option<Self> {
-        (old != new).then(|| Self { next: new.clone() })
+    pub(crate) fn between(old: &Element, new: &Element) -> Option<Self> {
+        (old.props() != new.props() || old.context_menu_model() != new.context_menu_model()).then(
+            || Self {
+                next: new.props().clone(),
+                next_context_menu: new.context_menu_model().cloned(),
+            },
+        )
     }
 
     /// Returns the complete semantic state requested by this update.
     pub fn props(&self) -> &Props {
         &self.next
+    }
+
+    /// Returns the complete context-menu model requested by this update.
+    ///
+    /// `None` means the element carries no context menu after this update.
+    pub fn context_menu(&self) -> Option<&ContextMenu> {
+        self.next_context_menu.as_ref()
     }
 }
 
@@ -92,34 +110,30 @@ pub trait NativeBackend {
 #[cfg(test)]
 mod tests {
     use super::PropertyPatch;
-    use crate::{ListRowRole, Props, Symbol};
+    use crate::{MenuEntry, MenuItem, label};
 
     #[test]
     fn a_patch_exposes_the_next_props_snapshot() {
-        let current = Props::ListRow {
-            title: "Before".to_owned(),
-            subtitle: None,
-            cells: vec!["1 KB".to_owned()],
-            role: ListRowRole::Item,
-            expanded: false,
-            symbol: Some(Symbol::File),
-            selected: false,
-            disclosure: false,
-            accessibility_label: "Before, 1 KB".to_owned(),
-        };
-        let next = Props::ListRow {
-            title: "After".to_owned(),
-            subtitle: Some("Changed".to_owned()),
-            cells: vec!["2 KB".to_owned()],
-            role: ListRowRole::Item,
-            expanded: true,
-            symbol: Some(Symbol::Code),
-            selected: true,
-            disclosure: true,
-            accessibility_label: "After, Changed, 2 KB".to_owned(),
-        };
+        let current = label("Before");
+        let next = label("After");
 
         let patch = PropertyPatch::between(&current, &next).expect("changed properties");
-        assert_eq!(patch.props(), &next);
+        assert_eq!(patch.props(), next.props());
+        assert!(patch.context_menu().is_none());
+    }
+
+    #[test]
+    fn a_menu_only_change_is_a_patch_and_handler_changes_are_not() {
+        let plain = label("File");
+        let with_menu =
+            || label("File").context_menu([MenuEntry::item(MenuItem::new("open", "Open", || {}))]);
+
+        let patch = PropertyPatch::between(&plain, &with_menu()).expect("menu attachment");
+        assert!(patch.context_menu().is_some());
+
+        let removal = PropertyPatch::between(&with_menu(), &plain).expect("menu removal");
+        assert!(removal.context_menu().is_none());
+
+        assert!(PropertyPatch::between(&with_menu(), &with_menu()).is_none());
     }
 }

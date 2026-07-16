@@ -60,6 +60,13 @@ pub enum TreeError {
         /// Human-readable invariant violation.
         reason: String,
     },
+    /// A context menu declared invalid entry identities.
+    InvalidMenu {
+        /// Element path.
+        path: String,
+        /// Human-readable invariant violation.
+        reason: String,
+    },
     /// A mounted native window attempted to replace its promoted root class.
     WindowRootKindChanged {
         /// Root kind retained by the native window.
@@ -112,6 +119,9 @@ impl fmt::Display for TreeError {
             }
             Self::InvalidImage { path, reason } => {
                 write!(formatter, "invalid image at {path}: {reason}")
+            }
+            Self::InvalidMenu { path, reason } => {
+                write!(formatter, "invalid context menu at {path}: {reason}")
             }
             Self::WindowRootKindChanged { previous, next } => write!(
                 formatter,
@@ -179,6 +189,15 @@ fn validate_accelerator_placement(children: &[Element], path: &str) -> Result<()
 }
 
 fn validate_node(element: &Element, path: &str) -> Result<(), TreeError> {
+    if let Some(menu) = element.context_menu_model()
+        && let Err(reason) = menu.validate_identities()
+    {
+        return Err(TreeError::InvalidMenu {
+            path: path.to_owned(),
+            reason,
+        });
+    }
+
     let children = element.children();
     let mut keys = HashSet::new();
     for child in children {
