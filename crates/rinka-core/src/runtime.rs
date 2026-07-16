@@ -1,8 +1,8 @@
 //! Component state and queued message delivery.
 
 use crate::{
-    Element, ElementKind, NativeBackend, RenderContext, RenderError, Renderer, TreeError,
-    WindowContent,
+    Clipboard, Element, ElementKind, NativeBackend, PlatformServices, RenderContext, RenderError,
+    Renderer, TreeError, WindowContent,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -14,18 +14,67 @@ pub trait Component {
     /// Message accepted by the state transition function.
     type Message: 'static;
 
-    /// Applies one message.
-    fn update(&mut self, message: Self::Message);
+    /// Applies one message, reaching platform services through the context.
+    fn update(&mut self, message: Self::Message, context: &UpdateContext<Self::Message>);
 
     /// Describes the current native UI tree.
     fn view(&self, dispatch: Dispatch<Self::Message>) -> Element;
+}
+
+/// Capabilities available while one message is applied: follow-up dispatch
+/// and the mounting host's platform services.
+///
+/// The runtimes queue messages emitted during a running update and apply
+/// them, in emission order, after it returns — so a service completion that
+/// dispatches synchronously (the macOS pasteboard read, the headless fake)
+/// can never re-enter `update`.
+pub struct UpdateContext<M> {
+    dispatch: Dispatch<M>,
+    services: PlatformServices,
+}
+
+impl<M> UpdateContext<M> {
+    /// Creates a context; runtimes build one per message, tests build their
+    /// own over a recording dispatch and fake services.
+    pub fn new(dispatch: Dispatch<M>, services: PlatformServices) -> Self {
+        Self { dispatch, services }
+    }
+
+    /// Returns the sender that queues follow-up messages.
+    pub fn dispatch(&self) -> &Dispatch<M> {
+        &self.dispatch
+    }
+
+    /// Returns the mounting host's service registry.
+    pub fn services(&self) -> &PlatformServices {
+        &self.services
+    }
+
+    /// Returns the platform clipboard.
+    pub fn clipboard(&self) -> &Clipboard {
+        self.services.clipboard()
+    }
+}
+
+impl<M> fmt::Debug for UpdateContext<M> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UpdateContext")
+            .field("services", &self.services)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Cloneable message sender captured by event closures.
 pub struct Dispatch<M>(Rc<dyn Fn(M)>);
 
 impl<M> Dispatch<M> {
-    pub(crate) fn from_handler(handler: impl Fn(M) + 'static) -> Self {
+    /// Creates a sender from a raw handler.
+    ///
+    /// The runtimes build queue-backed senders themselves; this constructor
+    /// exists for platform hosts and for tests that record emitted messages
+    /// while calling [`Component::update`] directly.
+    pub fn from_handler(handler: impl Fn(M) + 'static) -> Self {
         Self(Rc::new(handler))
     }
 
@@ -52,6 +101,7 @@ struct RuntimeInner<B: NativeBackend, C: Component> {
     component: RefCell<C>,
     queue: RefCell<VecDeque<C::Message>>,
     processing: Cell<bool>,
+    services: PlatformServices,
     last_error: RefCell<Option<RenderError<B::Error>>>,
 }
 
@@ -61,13 +111,19 @@ pub struct AppRuntime<B: NativeBackend, C: Component> {
 }
 
 impl<B: NativeBackend + 'static, C: Component + 'static> AppRuntime<B, C> {
-    /// Mounts a component and performs the first render.
-    pub fn mount(renderer: Renderer<B>, component: C) -> Result<Self, RenderError<B::Error>> {
+    /// Mounts a component over a host's services and performs the first
+    /// render.
+    pub fn mount(
+        renderer: Renderer<B>,
+        component: C,
+        services: PlatformServices,
+    ) -> Result<Self, RenderError<B::Error>> {
         let inner = Rc::new(RuntimeInner {
             renderer: RefCell::new(renderer),
             component: RefCell::new(component),
             queue: RefCell::new(VecDeque::new()),
             processing: Cell::new(false),
+            services,
             last_error: RefCell::new(None),
         });
         let runtime = Self { inner };
@@ -94,7 +150,9 @@ impl<B: NativeBackend + 'static, C: Component + 'static> AppRuntime<B, C> {
             let Some(message) = message else {
                 break;
             };
-            inner.component.borrow_mut().update(message);
+            let context =
+                UpdateContext::new(Self::dispatch(Rc::downgrade(inner)), inner.services.clone());
+            inner.component.borrow_mut().update(message, &context);
             let dispatch = Self::dispatch(Rc::downgrade(inner));
             let next = inner.component.borrow().view(dispatch);
             if let Err(error) = inner.renderer.borrow_mut().render(next) {
@@ -158,6 +216,7 @@ struct WindowRuntimeInner<B: NativeBackend> {
     root_kind: Cell<Option<ElementKind>>,
     rendering: Cell<bool>,
     pending: Cell<bool>,
+    services: PlatformServices,
     reconciled: RefCell<Option<Rc<dyn Fn()>>>,
     last_error: RefCell<Option<RenderError<B::Error>>>,
 }
@@ -168,10 +227,12 @@ pub struct WindowRuntime<B: NativeBackend> {
 }
 
 impl<B: NativeBackend + 'static> WindowRuntime<B> {
-    /// Mounts window content and performs the first reconciliation.
+    /// Mounts window content over a host's services and performs the first
+    /// reconciliation.
     pub fn mount(
         renderer: Renderer<B>,
         content: WindowContent,
+        services: PlatformServices,
     ) -> Result<Self, RenderError<B::Error>> {
         let runtime = Self {
             inner: Rc::new(WindowRuntimeInner {
@@ -180,6 +241,7 @@ impl<B: NativeBackend + 'static> WindowRuntime<B> {
                 root_kind: Cell::new(None),
                 rendering: Cell::new(false),
                 pending: Cell::new(false),
+                services,
                 reconciled: RefCell::new(None),
                 last_error: RefCell::new(None),
             }),
@@ -190,13 +252,16 @@ impl<B: NativeBackend + 'static> WindowRuntime<B> {
 
     fn context(inner: &Rc<WindowRuntimeInner<B>>) -> RenderContext {
         let weak = Rc::downgrade(inner);
-        RenderContext::new(move || {
-            let Some(inner) = weak.upgrade() else {
-                return;
-            };
-            inner.pending.set(true);
-            Self::drain(&inner);
-        })
+        RenderContext::new(
+            move || {
+                let Some(inner) = weak.upgrade() else {
+                    return;
+                };
+                inner.pending.set(true);
+                Self::drain(&inner);
+            },
+            inner.services.clone(),
+        )
     }
 
     fn drain(inner: &Rc<WindowRuntimeInner<B>>) {

@@ -1,5 +1,9 @@
 //! Deterministic retained-tree adapter used by tests and surface extraction.
 
+mod clipboard;
+
+pub use clipboard::FakeClipboard;
+
 use rinka_core::{
     ContextMenu, Element, EventBindings, MonospaceMetrics, NativeBackend, PropertyPatch, Props,
 };

@@ -31,6 +31,7 @@ pub use application::run;
 include!("platform/native_runtime.rs");
 include!("platform/canvas_surface.rs");
 include!("platform/key_dispatch.rs");
+include!("platform/pasteboard.rs");
 include!("platform/collection_delegate.rs");
 include!("platform/backend.rs");
 include!("platform/collection_mount.rs");

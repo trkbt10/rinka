@@ -7,6 +7,7 @@ mod accelerator;
 mod backend;
 mod canvas;
 mod chord;
+mod clipboard;
 mod element;
 mod event;
 mod menu;
@@ -15,6 +16,7 @@ mod projection;
 mod reconcile;
 mod runtime;
 mod semantics;
+mod services;
 mod toolbar;
 mod validation;
 mod window;
@@ -31,6 +33,7 @@ pub use canvas::{
 pub use chord::{
     ChordParseError, KeyChord, KeyIdentity, Modifiers, PrimaryModifier, ResolvedModifiers,
 };
+pub use clipboard::{Clipboard, ClipboardError, ClipboardFlavor, ClipboardService};
 pub use element::{
     Element, Key, button, canvas, column, image, input, label, list, list_row, mount_pattern,
     progress, row, scroll, separator, spacer, status, toggle,
@@ -42,12 +45,13 @@ pub use menu::{ContextMenu, MenuEntry, MenuItem, MenuItemRole, Submenu};
 pub use pattern::{PatternRegion, UiPattern};
 pub use projection::{ProjectedHandle, WindowProjection};
 pub use reconcile::{MountedNode, RenderError, RenderStats, Renderer};
-pub use runtime::{AppRuntime, Component, Dispatch, WindowRuntime};
+pub use runtime::{AppRuntime, Component, Dispatch, UpdateContext, WindowRuntime};
 pub use semantics::{
     Align, Axis, ButtonMaterial, ButtonRole, CollectionPattern, ControlSize, ElementKind,
     ImageContent, ImageScaling, InputKind, Justify, ListRowRole, Props, SortDirection, Spacing,
     StatusTone, Symbol, TableColumn, TableSort, TextRole,
 };
+pub use services::PlatformServices;
 pub use toolbar::{
     ToolbarAction, ToolbarChoice, ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem,
     ToolbarItemKind, ToolbarPlacement,

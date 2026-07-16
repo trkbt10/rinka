@@ -7,8 +7,8 @@
 
 use rinka_core::{
     Accelerator, AcceleratorOutcome, AcceleratorRouter, AcceleratorScope, AppRuntime, Component,
-    Dispatch, Element, KeyChord, KeyRoutingContext, RenderError, Renderer, TreeError, WindowId,
-    column, label,
+    Dispatch, Element, KeyChord, KeyRoutingContext, PlatformServices, RenderError, Renderer,
+    TreeError, UpdateContext, WindowId, column, label,
 };
 use rinka_headless::{HeadlessBackend, Operation};
 
@@ -82,7 +82,7 @@ impl ShortcutComponent {
 impl Component for ShortcutComponent {
     type Message = ShortcutMessage;
 
-    fn update(&mut self, message: Self::Message) {
+    fn update(&mut self, message: Self::Message, _context: &UpdateContext<Self::Message>) {
         match message {
             ShortcutMessage::Fired(id) => self.fired.push(id),
             ShortcutMessage::SetSaveEnabled(enabled) => self.save_enabled = enabled,
@@ -124,8 +124,12 @@ impl Component for ShortcutComponent {
 }
 
 fn mount(component: ShortcutComponent) -> AppRuntime<HeadlessBackend, ShortcutComponent> {
-    AppRuntime::mount(Renderer::new(HeadlessBackend::new()), component)
-        .expect("initial render succeeds")
+    AppRuntime::mount(
+        Renderer::new(HeadlessBackend::new()),
+        component,
+        PlatformServices::default(),
+    )
+    .expect("initial render succeeds")
 }
 
 fn register(
@@ -277,7 +281,7 @@ enum ScopedMessage {
 impl Component for ScopedComponent {
     type Message = ScopedMessage;
 
-    fn update(&mut self, message: Self::Message) {
+    fn update(&mut self, message: Self::Message, _context: &UpdateContext<Self::Message>) {
         match message {
             ScopedMessage::Fired(id) => self.fired.push(id),
         }
@@ -307,8 +311,12 @@ impl Component for ScopedComponent {
 }
 
 fn mount_scoped(component: ScopedComponent) -> AppRuntime<HeadlessBackend, ScopedComponent> {
-    AppRuntime::mount(Renderer::new(HeadlessBackend::new()), component)
-        .expect("initial render succeeds")
+    AppRuntime::mount(
+        Renderer::new(HeadlessBackend::new()),
+        component,
+        PlatformServices::default(),
+    )
+    .expect("initial render succeeds")
 }
 
 #[test]
@@ -421,7 +429,7 @@ fn duplicate_chords_in_one_scope_are_a_typed_render_diagnostic() {
     struct DuplicateComponent;
     impl Component for DuplicateComponent {
         type Message = ();
-        fn update(&mut self, (): Self::Message) {}
+        fn update(&mut self, (): Self::Message, _context: &UpdateContext<Self::Message>) {}
         fn view(&self, _dispatch: Dispatch<Self::Message>) -> Element {
             column([label("duplicate").with_key("state")])
                 .with_key("root")
@@ -432,8 +440,12 @@ fn duplicate_chords_in_one_scope_are_a_typed_render_diagnostic() {
         }
     }
 
-    let error = AppRuntime::mount(Renderer::new(HeadlessBackend::new()), DuplicateComponent)
-        .expect_err("duplicate chords must not mount");
+    let error = AppRuntime::mount(
+        Renderer::new(HeadlessBackend::new()),
+        DuplicateComponent,
+        PlatformServices::default(),
+    )
+    .expect_err("duplicate chords must not mount");
     assert!(
         matches!(
             &error,
@@ -449,7 +461,7 @@ fn accelerators_below_the_content_root_are_rejected() {
     struct MisplacedComponent;
     impl Component for MisplacedComponent {
         type Message = ();
-        fn update(&mut self, (): Self::Message) {}
+        fn update(&mut self, (): Self::Message, _context: &UpdateContext<Self::Message>) {}
         fn view(&self, _dispatch: Dispatch<Self::Message>) -> Element {
             column([label("inner")
                 .with_key("inner")
@@ -458,8 +470,12 @@ fn accelerators_below_the_content_root_are_rejected() {
         }
     }
 
-    let error = AppRuntime::mount(Renderer::new(HeadlessBackend::new()), MisplacedComponent)
-        .expect_err("nested accelerator tables must not mount");
+    let error = AppRuntime::mount(
+        Renderer::new(HeadlessBackend::new()),
+        MisplacedComponent,
+        PlatformServices::default(),
+    )
+    .expect_err("nested accelerator tables must not mount");
     assert!(
         matches!(
             &error,

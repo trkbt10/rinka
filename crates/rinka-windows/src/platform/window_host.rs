@@ -220,10 +220,13 @@ fn create_host_window(
     set_native_font(root, font.0);
     apply_native_theme(root, dark);
     let backend = WindowsBackend::new(root, dpi, font.clone(), dark);
-    let runtime = WindowRuntime::mount(Renderer::new(backend), spec.content).map_err(|error| {
-        WindowsDiagnostic::InvalidNativeState {
-            reason: format!("initial Windows render failed: {error}"),
-        }
+    let runtime = WindowRuntime::mount(
+        Renderer::new(backend),
+        spec.content,
+        crate::platform_services(),
+    )
+    .map_err(|error| WindowsDiagnostic::InvalidNativeState {
+        reason: format!("initial Windows render failed: {error}"),
     })?;
     let mut host = Box::new(HostWindow {
         hwnd,

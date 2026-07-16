@@ -8,10 +8,24 @@ use rinka_core::{ApplicationSpec, Element, ElementKind, PanelBehavior, WindowKin
 use std::error::Error;
 use std::fmt;
 
+/// Identifies this platform adapter in diagnostics.
+pub const PLATFORM_NAME: &str = "Windows WinUI 3";
+
 pub mod accelerator_mapping;
 
 #[cfg(target_os = "windows")]
 mod platform;
+
+/// Builds this host's service registry.
+///
+/// The WinUI host does not implement the clipboard service yet
+/// (`reports/clipboard-access`); the registry carries the typed rejection so
+/// component update logic observes an honest [`rinka_core::ClipboardError`]
+/// instead of a stub success.
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn platform_services() -> rinka_core::PlatformServices {
+    rinka_core::PlatformServices::new(rinka_core::Clipboard::unsupported(PLATFORM_NAME))
+}
 
 /// A diagnostic returned before or while starting the WinUI host.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -409,5 +423,31 @@ mod tests {
         let wide = resolve_workspace_visibility(true, true, true, true, 1120.0);
         assert!(wide.sidebar_open);
         assert!(wide.inspector_open);
+    }
+
+    #[test]
+    fn the_clipboard_capability_is_a_typed_unsupported_diagnostic() {
+        use rinka_core::ClipboardError;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let services = super::platform_services();
+        assert_eq!(
+            services.clipboard().write_text("never stored"),
+            Err(ClipboardError::Unsupported {
+                platform: super::PLATFORM_NAME,
+            })
+        );
+        let delivered = Rc::new(RefCell::new(None));
+        let sink = delivered.clone();
+        services
+            .clipboard()
+            .read_text(move |result| *sink.borrow_mut() = Some(result));
+        assert_eq!(
+            delivered.borrow_mut().take(),
+            Some(Err(ClipboardError::Unsupported {
+                platform: super::PLATFORM_NAME,
+            }))
+        );
     }
 }

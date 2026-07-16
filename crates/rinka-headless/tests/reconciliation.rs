@@ -1,9 +1,9 @@
 //! Consumer-level reconciliation and runtime contracts.
 
 use rinka_core::{
-    AppRuntime, CollectionPattern, Component, Dispatch, Element, ListRowRole, Props, Renderer,
-    SortDirection, Spacing, TableColumn, TableSort, UiPattern, WindowContent, WindowRuntime,
-    button, column, label, list, list_row, mount_pattern,
+    AppRuntime, CollectionPattern, Component, Dispatch, Element, ListRowRole, PlatformServices,
+    Props, Renderer, SortDirection, Spacing, TableColumn, TableSort, UiPattern, UpdateContext,
+    WindowContent, WindowRuntime, button, column, label, list, list_row, mount_pattern,
 };
 use rinka_headless::{HeadlessBackend, Operation};
 use std::cell::Cell;
@@ -34,7 +34,7 @@ struct WindowSelection {
 impl Component for WindowSelection {
     type Message = bool;
 
-    fn update(&mut self, selected: Self::Message) {
+    fn update(&mut self, selected: Self::Message, _context: &UpdateContext<Self::Message>) {
         self.selected = selected;
     }
 
@@ -54,6 +54,7 @@ fn window_content_reconciles_component_messages_on_the_same_native_root() {
     let runtime = WindowRuntime::mount(
         renderer,
         WindowContent::component(WindowSelection { selected: false }),
+        PlatformServices::default(),
     )
     .unwrap();
     let (before, events) = runtime.with_renderer(|renderer| {
@@ -79,7 +80,7 @@ struct WindowRootTransition {
 impl Component for WindowRootTransition {
     type Message = ();
 
-    fn update(&mut self, (): Self::Message) {
+    fn update(&mut self, (): Self::Message, _context: &UpdateContext<Self::Message>) {
         self.replaced = true;
     }
 
@@ -98,6 +99,7 @@ fn window_root_kind_change_is_rejected_before_native_mutation() {
     let runtime = WindowRuntime::mount(
         renderer,
         WindowContent::component(WindowRootTransition { replaced: false }),
+        PlatformServices::default(),
     )
     .unwrap();
     let (original, events, operation_count) = runtime.with_renderer(|renderer| {
@@ -581,7 +583,7 @@ enum Message {
 impl Component for Counter {
     type Message = Message;
 
-    fn update(&mut self, message: Self::Message) {
+    fn update(&mut self, message: Self::Message, _context: &UpdateContext<Self::Message>) {
         match message {
             Message::Increment => self.count += 1,
         }
@@ -602,8 +604,12 @@ impl Component for Counter {
 
 #[test]
 fn native_event_updates_component_and_patches_tree() {
-    let runtime =
-        AppRuntime::mount(Renderer::new(HeadlessBackend::new()), Counter::default()).unwrap();
+    let runtime = AppRuntime::mount(
+        Renderer::new(HeadlessBackend::new()),
+        Counter::default(),
+        PlatformServices::default(),
+    )
+    .unwrap();
     let handle = runtime
         .with_renderer(|renderer| renderer.backend().find_by_key("increment"))
         .unwrap();

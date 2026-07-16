@@ -18,5 +18,6 @@ use std::rc::Rc;
 
 include!("platform/model.rs");
 include!("platform/backend.rs");
+include!("platform/clipboard.rs");
 include!("platform/mount.rs");
 include!("platform/window.rs");

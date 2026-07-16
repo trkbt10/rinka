@@ -3,7 +3,7 @@
 
 use rinka_core::{
     AppRuntime, CollectionPattern, Component, Dispatch, Element, MenuEntry, MenuItem, MenuItemRole,
-    Renderer, Submenu, TableColumn, label, list, list_row,
+    PlatformServices, Renderer, Submenu, TableColumn, UpdateContext, label, list, list_row,
 };
 use rinka_headless::{HeadlessBackend, Operation};
 use std::cell::Cell;
@@ -97,7 +97,7 @@ enum FileMessage {
 impl Component for FileMenu {
     type Message = FileMessage;
 
-    fn update(&mut self, message: Self::Message) {
+    fn update(&mut self, message: Self::Message, _context: &UpdateContext<Self::Message>) {
         match message {
             FileMessage::Rename => self.renames += 1,
             FileMessage::Delete => self.deleted = true,
@@ -136,6 +136,7 @@ fn activation_dispatches_exactly_one_message_through_the_stable_binding() {
             renames: 0,
             deleted: false,
         },
+        PlatformServices::default(),
     )
     .unwrap();
     let events = runtime
@@ -161,6 +162,7 @@ fn a_disabled_item_does_not_dispatch() {
             renames: 0,
             deleted: false,
         },
+        PlatformServices::default(),
     )
     .unwrap();
     let events = runtime

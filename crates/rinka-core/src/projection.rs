@@ -1,8 +1,8 @@
 //! Live retained projection for adapters with their own reconciler.
 
 use crate::{
-    Element, MountedNode, NativeBackend, PropertyPatch, RenderError, Renderer, WindowContent,
-    WindowRuntime,
+    Element, MountedNode, NativeBackend, PlatformServices, PropertyPatch, RenderError, Renderer,
+    WindowContent, WindowRuntime,
 };
 use std::convert::Infallible;
 
@@ -96,9 +96,14 @@ pub struct WindowProjection {
 }
 
 impl WindowProjection {
-    /// Mounts reactive window content and validates its initial tree.
-    pub fn mount(content: WindowContent) -> Result<Self, RenderError<Infallible>> {
-        let runtime = WindowRuntime::mount(Renderer::new(ProjectionBackend::new()), content)?;
+    /// Mounts reactive window content over a host's services and validates
+    /// its initial tree.
+    pub fn mount(
+        content: WindowContent,
+        services: PlatformServices,
+    ) -> Result<Self, RenderError<Infallible>> {
+        let runtime =
+            WindowRuntime::mount(Renderer::new(ProjectionBackend::new()), content, services)?;
         Ok(Self { runtime })
     }
 
@@ -131,7 +136,10 @@ impl std::fmt::Debug for WindowProjection {
 #[cfg(test)]
 mod tests {
     use super::WindowProjection;
-    use crate::{Component, Dispatch, Element, Props, WindowContent, button, column, label};
+    use crate::{
+        Component, Dispatch, Element, PlatformServices, Props, UpdateContext, WindowContent,
+        button, column, label,
+    };
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -142,7 +150,7 @@ mod tests {
     impl Component for Counter {
         type Message = ();
 
-        fn update(&mut self, (): Self::Message) {
+        fn update(&mut self, (): Self::Message, _context: &UpdateContext<Self::Message>) {
             self.value += 1;
         }
 
@@ -157,8 +165,11 @@ mod tests {
 
     #[test]
     fn common_event_reconciles_and_preserves_projected_identity() {
-        let projection = WindowProjection::mount(WindowContent::component(Counter { value: 0 }))
-            .expect("initial projection");
+        let projection = WindowProjection::mount(
+            WindowContent::component(Counter { value: 0 }),
+            PlatformServices::default(),
+        )
+        .expect("initial projection");
         let reconciled = Rc::new(Cell::new(0));
         let observed = reconciled.clone();
         projection.set_reconciled_handler(move || observed.set(observed.get() + 1));

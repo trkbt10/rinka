@@ -2,11 +2,12 @@
 
 use rinka::{
     Accelerator, Align, ApplicationSpec, Axis, ButtonRole, CanvasColor, CanvasPoint, CanvasRect,
-    CanvasSize, CollectionPattern, Component, ControlSize, Dispatch, DrawScene, Element,
-    ImageContent, ImageScaling, Justify, KeyChord, LineWidth, MenuEntry, MenuItem, PanelBehavior,
-    PointerEvent, PointerPhase, Size, SortDirection, Spacing, StatusTone, Submenu, Symbol,
-    TableColumn, TableSort, TextRole, ToolbarAction, ToolbarChoice, ToolbarDisplay,
-    ToolbarGroupDisplay, ToolbarItem, ToolbarPlacement, UiPattern, WindowContent, WindowId,
+    CanvasSize, ClipboardError, CollectionPattern, Component, ControlSize, Dispatch, DrawScene,
+    Element, ImageContent, ImageScaling, Justify, KeyChord, LineWidth, MenuEntry, MenuItem,
+    PanelBehavior, PointerEvent, PointerPhase, Size, SortDirection, Spacing, StatusTone, Submenu,
+    Symbol, TableColumn, TableSort, TextRole, ToolbarAction, ToolbarChoice, ToolbarDisplay,
+    ToolbarGroupDisplay, ToolbarItem, ToolbarPlacement, UiPattern, UpdateContext, WindowContent,
+    WindowId,
     WindowKind, WindowSpec, button, canvas, column, image, label, list, list_row, mount_pattern,
     progress, row, separator, spacer, status, toggle,
 };
@@ -71,6 +72,13 @@ enum Location {
 }
 
 impl Location {
+    const ALL: [Self; 4] = [
+        Self::Home,
+        Self::Documents,
+        Self::Downloads,
+        Self::RemoteProject,
+    ];
+
     const fn title(self) -> &'static str {
         match self {
             Self::Home => "Home",
@@ -122,6 +130,7 @@ struct ExplorerComponent {
     scene: Scene,
     location: Location,
     selected_file: Option<FileKey>,
+    clipboard_note: Option<String>,
     show_hidden: bool,
     favorites_expanded: bool,
     locations_expanded: bool,
@@ -152,6 +161,7 @@ impl ExplorerComponent {
             } else {
                 FileKey::Cargo
             }),
+            clipboard_note: None,
             show_hidden: false,
             favorites_expanded: true,
             locations_expanded: true,
@@ -273,12 +283,15 @@ enum ExplorerMessage {
     DeleteFile(FileKey),
     ToggleFavoriteFile(FileKey),
     OpenFileWith(FileKey, &'static str),
+    CopyPath,
+    PastePath,
+    ClipboardRead(Result<Option<String>, ClipboardError>),
 }
 
 impl Component for ExplorerComponent {
     type Message = ExplorerMessage;
 
-    fn update(&mut self, message: Self::Message) {
+    fn update(&mut self, message: Self::Message, context: &UpdateContext<Self::Message>) {
         match message {
             ExplorerMessage::SelectLocation(location) => {
                 self.location = location;
@@ -346,6 +359,38 @@ impl Component for ExplorerComponent {
             ExplorerMessage::OpenFileWith(file, tool) => {
                 self.last_file_action = Some(format!("Opened {} in {tool}", file_title(file)));
             }
+            ExplorerMessage::CopyPath => {
+                let path = self.location.path();
+                self.clipboard_note = Some(match context.clipboard().write_text(path) {
+                    Ok(()) => format!("Copied {path}"),
+                    Err(error) => format!("Copy failed: {error}"),
+                });
+            }
+            ExplorerMessage::PastePath => {
+                // The outcome always returns as a message: synchronous
+                // platforms deliver before read_text returns and the runtime
+                // queues the emission until this update finishes.
+                let dispatch = context.dispatch().clone();
+                context.clipboard().read_text(move |result| {
+                    dispatch.emit(ExplorerMessage::ClipboardRead(result));
+                });
+            }
+            ExplorerMessage::ClipboardRead(result) => {
+                self.clipboard_note = Some(match result {
+                    Ok(Some(text)) => match location_for_path(text.trim()) {
+                        Some(location) => {
+                            self.location = location;
+                            self.selected_file = (location == Location::RemoteProject
+                                && self.scene == Scene::Ready)
+                                .then_some(FileKey::Cargo);
+                            format!("Went to {}", location.title())
+                        }
+                        None => format!("Clipboard: {text}"),
+                    },
+                    Ok(None) => "Clipboard has no text".to_owned(),
+                    Err(error) => format!("Clipboard error: {error}"),
+                });
+            }
         }
     }
 
@@ -371,6 +416,13 @@ const fn file_title(key: FileKey) -> &'static str {
         FileKey::Preview => "design-preview.png",
         FileKey::HiddenEnvironment => ".env",
     }
+}
+
+/// Resolves clipboard text back to a known location for paste navigation.
+fn location_for_path(path: &str) -> Option<Location> {
+    Location::ALL
+        .into_iter()
+        .find(|location| location.path() == path)
 }
 
 /// Builds the complete native application contract.
@@ -690,15 +742,54 @@ fn location_row(
 }
 
 fn directory_content(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) -> Element {
+    let copy_dispatch = dispatch.clone();
+    let paste_dispatch = dispatch.clone();
+    let mut status_children = vec![
+        label(scene_summary(model))
+            .text_role(TextRole::Secondary)
+            .with_key("item-summary"),
+        label(model.last_file_action.clone().unwrap_or_default())
+            .text_role(TextRole::Secondary)
+            .with_key("file-action-note"),
+    ];
+    if let Some(note) = &model.clipboard_note {
+        status_children.push(
+            label(note.clone())
+                .text_role(TextRole::Secondary)
+                .with_key("clipboard-note"),
+        );
+    }
+    status_children.push(spacer(true, false).with_key("status-space"));
+    status_children.push(
+        label(connection_status(model.scene))
+            .text_role(TextRole::Secondary)
+            .with_key("connection-status"),
+    );
     column([
         column([
             label(model.location.title())
                 .text_role(TextRole::Title)
                 .with_key("directory-title"),
-            label(model.location.path())
-                .text_role(TextRole::Monospace)
-                .selectable(true)
-                .with_key("directory-path"),
+            row([
+                label(model.location.path())
+                    .text_role(TextRole::Monospace)
+                    .selectable(true)
+                    .with_key("directory-path"),
+                spacer(true, false).with_key("directory-path-space"),
+                button("Copy Path", "Copy the current directory path", move || {
+                    copy_dispatch.emit(ExplorerMessage::CopyPath);
+                })
+                .control_size(ControlSize::Small)
+                .with_key("copy-path"),
+                button("Paste Path", "Go to the path on the clipboard", move || {
+                    paste_dispatch.emit(ExplorerMessage::PastePath);
+                })
+                .control_size(ControlSize::Small)
+                .with_key("paste-path"),
+            ])
+            .align(Align::Center)
+            .spacing(Spacing::Related)
+            .with_key("directory-path-row"),
         ])
         .spacing(Spacing::Compact)
         .padding(Spacing::Content)
@@ -706,21 +797,10 @@ fn directory_content(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessa
         separator(Axis::Horizontal).with_key("directory-separator"),
         scene_body(model, dispatch),
         separator(Axis::Horizontal).with_key("status-separator"),
-        row([
-            label(scene_summary(model))
-                .text_role(TextRole::Secondary)
-                .with_key("item-summary"),
-            label(model.last_file_action.clone().unwrap_or_default())
-                .text_role(TextRole::Secondary)
-                .with_key("file-action-note"),
-            spacer(true, false).with_key("status-space"),
-            label(connection_status(model.scene))
-                .text_role(TextRole::Secondary)
-                .with_key("connection-status"),
-        ])
-        .align(Align::Center)
-        .padding(Spacing::Content)
-        .with_key("status-row"),
+        row(status_children)
+            .align(Align::Center)
+            .padding(Spacing::Content)
+            .with_key("status-row"),
     ])
     .spacing(Spacing::Joined)
     .with_key("directory-content")
@@ -1455,7 +1535,112 @@ const fn connection_status(scene: Scene) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{Scene, application};
+    use super::{Component, ExplorerComponent, ExplorerMessage, Location, Scene, application};
+    use rinka::{Dispatch, PlatformServices, UpdateContext};
+    use rinka_headless::FakeClipboard;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// Builds an update context over the fake clipboard and a recording
+    /// dispatch, so `update` is exercised without any platform or runtime.
+    fn clipboard_context(
+        fake: &FakeClipboard,
+    ) -> (
+        UpdateContext<ExplorerMessage>,
+        Rc<RefCell<Vec<ExplorerMessage>>>,
+    ) {
+        let received = Rc::new(RefCell::new(Vec::new()));
+        let sink = received.clone();
+        let dispatch = Dispatch::from_handler(move |message| sink.borrow_mut().push(message));
+        (
+            UpdateContext::new(dispatch, PlatformServices::new(fake.handle())),
+            received,
+        )
+    }
+
+    /// Applies every recorded follow-up message, as the runtime queue would.
+    fn drain_into(
+        component: &mut ExplorerComponent,
+        context: &UpdateContext<ExplorerMessage>,
+        received: &Rc<RefCell<Vec<ExplorerMessage>>>,
+    ) {
+        loop {
+            let message = received.borrow_mut().pop();
+            let Some(message) = message else {
+                break;
+            };
+            component.update(message, context);
+        }
+    }
+
+    #[test]
+    fn copy_path_writes_the_current_location_path_to_the_service() {
+        let fake = FakeClipboard::new();
+        let (context, _received) = clipboard_context(&fake);
+        let mut component = ExplorerComponent::new(Scene::Ready);
+        let expected = component.location.path();
+
+        component.update(ExplorerMessage::CopyPath, &context);
+
+        assert_eq!(fake.text().as_deref(), Some(expected));
+        assert_eq!(
+            component.clipboard_note.as_deref(),
+            Some(format!("Copied {expected}").as_str())
+        );
+    }
+
+    #[test]
+    fn paste_path_navigates_to_a_location_read_from_the_clipboard() {
+        let fake = FakeClipboard::new();
+        fake.handle()
+            .write_text(Location::Home.path())
+            .expect("preload");
+        let (context, received) = clipboard_context(&fake);
+        let mut component = ExplorerComponent::new(Scene::Ready);
+        assert_eq!(component.location, Location::RemoteProject);
+
+        component.update(ExplorerMessage::PastePath, &context);
+        // The read outcome arrives as a dispatched message, never in place.
+        assert_eq!(component.location, Location::RemoteProject);
+        drain_into(&mut component, &context, &received);
+
+        assert_eq!(component.location, Location::Home);
+        assert_eq!(component.clipboard_note.as_deref(), Some("Went to Home"));
+    }
+
+    #[test]
+    fn paste_of_unrecognized_cjk_multiline_text_is_echoed_verbatim() {
+        let fake = FakeClipboard::new();
+        fake.handle()
+            .write_text("日本語\nline two")
+            .expect("preload");
+        let (context, received) = clipboard_context(&fake);
+        let mut component = ExplorerComponent::new(Scene::Ready);
+
+        component.update(ExplorerMessage::PastePath, &context);
+        drain_into(&mut component, &context, &received);
+
+        assert_eq!(component.location, Location::RemoteProject);
+        assert_eq!(
+            component.clipboard_note.as_deref(),
+            Some("Clipboard: 日本語\nline two")
+        );
+    }
+
+    #[test]
+    fn paste_from_an_empty_clipboard_reports_no_text() {
+        let fake = FakeClipboard::new();
+        let (context, received) = clipboard_context(&fake);
+        let mut component = ExplorerComponent::new(Scene::Ready);
+
+        component.update(ExplorerMessage::PastePath, &context);
+        drain_into(&mut component, &context, &received);
+
+        assert_eq!(
+            component.clipboard_note.as_deref(),
+            Some("Clipboard has no text")
+        );
+    }
 
     #[test]
     fn activity_panel_reserves_space_for_its_native_content() {

@@ -120,7 +120,7 @@ impl ui::Component for WindowComponent {
 
         let redraw = request_redraw.clone();
         let projection = cx.use_memo((), || {
-            WindowProjection::mount(self.window.content.clone())
+            WindowProjection::mount(self.window.content.clone(), crate::platform_services())
                 .map(|projection| {
                     let projection = Rc::new(projection);
                     projection.set_reconciled_handler(move || {
@@ -205,7 +205,7 @@ fn prepare(application: ApplicationSpec) -> Result<PreparedApplication, WinUiDia
     let mut main = None;
     let mut panels = Vec::new();
     for window in application.windows {
-        WindowProjection::mount(window.content.clone())
+        WindowProjection::mount(window.content.clone(), crate::platform_services())
             .map_err(|error| WinUiDiagnostic::Projection(error.to_string()))?;
         match window.kind {
             WindowKind::Main => main = Some(window),

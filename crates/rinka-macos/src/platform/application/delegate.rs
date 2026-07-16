@@ -30,6 +30,7 @@ impl ApplicationDelegate {
             transition_probe: RefCell::new(None),
             scene_probe: RefCell::new(None),
             accelerator_probe: RefCell::new(None),
+            clipboard_probe: RefCell::new(None),
         });
         // SAFETY: NSObject's init signature and ownership convention are stable.
         unsafe { msg_send![super(object), init] }
@@ -1047,6 +1048,179 @@ impl ApplicationDelegate {
                     msg_send![objc2::class!(NSApplication), sharedApplication];
                 let _: () = msg_send![application, terminate: std::ptr::null::<AnyObject>()];
             }
+        }
+    }
+
+    fn begin_clipboard_probe(&self) {
+        if std::env::var_os("RINKA_APPKIT_CLIPBOARD_PROBE").is_none()
+            || self.ivars().clipboard_probe.borrow().is_some()
+        {
+            return;
+        }
+        if std::env::var_os("RINKA_APPKIT_SCENE_PROBE").is_some()
+            || std::env::var_os("RINKA_APPKIT_TRANSITION_PROBE").is_some()
+            || std::env::var_os("RINKA_APPKIT_ACCELERATOR_PROBE").is_some()
+        {
+            panic!("the clipboard probe must run in its own process");
+        }
+        *self.ivars().clipboard_probe.borrow_mut() = Some(ClipboardProbe {
+            step: 0,
+            attempts: 0,
+            passed: true,
+        });
+        self.schedule_clipboard_probe();
+    }
+
+    /// Presses the mounted native button declared under `key`.
+    ///
+    /// The retained view is extracted before the click so every renderer
+    /// borrow is released; the resulting component update may re-render
+    /// freely while the click is being delivered.
+    fn press_probe_button(&self, key: &str) -> bool {
+        let view = {
+            let renderers = self.ivars().renderers.borrow();
+            let Some(runtime) = renderers.first() else {
+                return false;
+            };
+            runtime.with_renderer(|renderer| {
+                renderer.mounted().and_then(|root| {
+                    mounted_handle_for_key(root, key).map(|handle| handle.0.view.clone())
+                })
+            })
+        };
+        let Some(view) = view else {
+            return false;
+        };
+        // SAFETY: The retained view is the NSButton mounted for `key`;
+        // performClick: drives its connected target/action synchronously on
+        // AppKit's main thread.
+        unsafe {
+            let _: () = msg_send![view.as_object(), performClick: std::ptr::null::<AnyObject>()];
+        }
+        true
+    }
+
+    /// Reads the explorer's mounted clipboard status note, if present.
+    fn probe_clipboard_note(&self) -> Option<String> {
+        let renderers = self.ivars().renderers.borrow();
+        renderers.first().and_then(|runtime| {
+            runtime.with_renderer(|renderer| {
+                renderer
+                    .mounted()
+                    .and_then(|root| mounted_label_text(root, "clipboard-note"))
+            })
+        })
+    }
+
+    fn fail_clipboard_probe_step(&self, step: &'static str, detail: &str) {
+        eprintln!("Rinka clipboard probe step={step} {detail} pass=false");
+        if let Some(probe) = self.ivars().clipboard_probe.borrow_mut().as_mut() {
+            probe.passed = false;
+        }
+        self.finish_clipboard_probe();
+    }
+
+    /// Presses Paste Path first — reading the seeded text — and Copy Path
+    /// second, so the app-written path is what the wrapping script's final
+    /// pbpaste observes. Both observations are in-process (mounted props),
+    /// making the probe immune to desktop focus contention; the
+    /// cross-process interop itself is asserted by the script through
+    /// pbcopy and pbpaste.
+    fn advance_clipboard_probe(&self) {
+        const MAX_MAIN_LOOP_TURNS: usize = 200;
+        let Some((step, attempts)) = self
+            .ivars()
+            .clipboard_probe
+            .borrow()
+            .as_ref()
+            .map(|probe| (probe.step, probe.attempts))
+        else {
+            return;
+        };
+        let retry = || {
+            if let Some(probe) = self.ivars().clipboard_probe.borrow_mut().as_mut() {
+                probe.attempts += 1;
+            }
+            self.schedule_clipboard_probe();
+        };
+        let advance = || {
+            if let Some(probe) = self.ivars().clipboard_probe.borrow_mut().as_mut() {
+                probe.step += 1;
+                probe.attempts = 0;
+            }
+            self.schedule_clipboard_probe();
+        };
+        match step {
+            0 => {
+                if self.observed_probe_scene() != Some("ready") {
+                    if attempts >= MAX_MAIN_LOOP_TURNS {
+                        self.fail_clipboard_probe_step("initial_scene", "expected_scene=ready");
+                        return;
+                    }
+                    retry();
+                    return;
+                }
+                eprintln!("Rinka clipboard probe step=initial_scene observed_scene=ready pass=true");
+                if !self.press_probe_button("paste-path") {
+                    self.fail_clipboard_probe_step("press_paste", "button_not_mounted");
+                    return;
+                }
+                advance();
+            }
+            1 => match self.probe_clipboard_note() {
+                Some(note) => {
+                    eprintln!("Rinka clipboard probe step=paste observed={note:?} pass=true");
+                    if !self.press_probe_button("copy-path") {
+                        self.fail_clipboard_probe_step("press_copy", "button_not_mounted");
+                        return;
+                    }
+                    advance();
+                }
+                None if attempts < MAX_MAIN_LOOP_TURNS => retry(),
+                None => self.fail_clipboard_probe_step("paste", "note_timeout"),
+            },
+            _ => match self.probe_clipboard_note() {
+                Some(note) if note.starts_with("Copied ") => {
+                    eprintln!("Rinka clipboard probe step=copy observed={note:?} pass=true");
+                    self.finish_clipboard_probe();
+                }
+                _ if attempts < MAX_MAIN_LOOP_TURNS => retry(),
+                observed => self.fail_clipboard_probe_step(
+                    "copy",
+                    &format!("observed={observed:?}"),
+                ),
+            },
+        }
+    }
+
+    fn schedule_clipboard_probe(&self) {
+        // SAFETY: The next main-loop turn runs after the pressed button's
+        // action has dispatched and any resulting reconciliation completed.
+        unsafe {
+            let _: () = msg_send![self,
+                performSelector: sel!(runClipboardProbe:),
+                withObject: std::ptr::null::<AnyObject>(),
+                afterDelay: 0.05_f64
+            ];
+        }
+    }
+
+    fn finish_clipboard_probe(&self) {
+        let passed = self
+            .ivars()
+            .clipboard_probe
+            .borrow()
+            .as_ref()
+            .is_some_and(|probe| probe.passed);
+        eprintln!(
+            "Rinka clipboard probe result={}",
+            if passed { "PASS" } else { "FAIL" }
+        );
+        // SAFETY: Diagnostic completion terminates only the current test app.
+        unsafe {
+            let application: *mut AnyObject =
+                msg_send![objc2::class!(NSApplication), sharedApplication];
+            let _: () = msg_send![application, terminate: std::ptr::null::<AnyObject>()];
         }
     }
 

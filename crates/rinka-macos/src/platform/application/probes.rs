@@ -16,10 +16,21 @@ struct ApplicationDelegateIvars {
     transition_probe: RefCell<Option<TransitionProbe>>,
     scene_probe: RefCell<Option<SceneProbe>>,
     accelerator_probe: RefCell<Option<AcceleratorProbe>>,
+    clipboard_probe: RefCell<Option<ClipboardProbe>>,
 }
 
 #[derive(Clone, Copy, Debug)]
 struct AcceleratorProbe {
+    step: usize,
+    attempts: usize,
+    passed: bool,
+}
+
+/// In-process driver for the live pbcopy/pbpaste interop evidence: it
+/// presses the explorer's real clipboard buttons and reports the observed
+/// status note, while the wrapping script owns the cross-process assertions.
+#[derive(Clone, Copy, Debug)]
+struct ClipboardProbe {
     step: usize,
     attempts: usize,
     passed: bool,
@@ -325,6 +336,7 @@ define_class!(
             self.begin_scene_probe();
             self.begin_accelerator_probe();
             self.begin_context_menu_probe();
+            self.begin_clipboard_probe();
         }
 
         #[unsafe(method(runTransitionProbe:))]
@@ -340,6 +352,11 @@ define_class!(
         #[unsafe(method(runAcceleratorProbe:))]
         fn run_accelerator_probe(&self, _sender: *mut AnyObject) {
             self.advance_accelerator_probe();
+        }
+
+        #[unsafe(method(runClipboardProbe:))]
+        fn run_clipboard_probe(&self, _sender: *mut AnyObject) {
+            self.advance_clipboard_probe();
         }
 
         #[unsafe(method(windowDidResize:))]

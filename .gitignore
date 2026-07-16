@@ -2,3 +2,4 @@
 /.fixture
 /verification
 .DS_Store
+/.target-wt

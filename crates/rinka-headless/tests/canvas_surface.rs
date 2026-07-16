@@ -2,8 +2,9 @@
 
 use rinka_core::{
     AppRuntime, CanvasColor, CanvasPoint, CanvasRect, CanvasSize, CanvasVector, Component,
-    Dispatch, DrawCommand, DrawScene, Element, LineWidth, NativeBackend, PointerButton,
-    PointerEvent, PointerModifiers, PointerPhase, Props, Renderer, canvas, column, label,
+    Dispatch, DrawCommand, DrawScene, Element, LineWidth, NativeBackend, PlatformServices,
+    PointerButton, PointerEvent, PointerModifiers, PointerPhase, Props, Renderer, UpdateContext,
+    canvas, column, label,
 };
 use rinka_headless::{HeadlessBackend, Operation};
 use std::cell::RefCell;
@@ -209,7 +210,7 @@ struct CrosshairComponent {
 impl Component for CrosshairComponent {
     type Message = PointerEvent;
 
-    fn update(&mut self, message: Self::Message) {
+    fn update(&mut self, message: Self::Message, _context: &UpdateContext<Self::Message>) {
         self.pointer = Some(message);
     }
 
@@ -234,6 +235,7 @@ fn pointer_events_round_trip_element_local_coordinates_into_messages() {
     let runtime = AppRuntime::mount(
         Renderer::new(HeadlessBackend::new()),
         CrosshairComponent { pointer: None },
+        PlatformServices::default(),
     )
     .unwrap();
     let handle = runtime

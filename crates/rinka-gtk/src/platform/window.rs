@@ -16,6 +16,7 @@ fn build_window(
     let runtime = WindowRuntime::mount(
         Renderer::new(GtkBackend::new(&root, layout_context)),
         spec.content.clone(),
+        display_platform_services()?,
     )
     .map_err(|error| GtkError(error.to_string()))?;
     let narrow_layout = Rc::new(Cell::new(false));

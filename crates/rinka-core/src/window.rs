@@ -1,7 +1,10 @@
 //! Window, toolbar, and panel descriptions.
 
-use crate::{Component, Dispatch, Element, ToolbarDisplay, ToolbarItem};
-use std::cell::RefCell;
+use crate::{
+    Component, Dispatch, Element, PlatformServices, ToolbarDisplay, ToolbarItem, UpdateContext,
+};
+use std::cell::{Cell, RefCell};
+use std::collections::VecDeque;
 use std::fmt;
 use std::rc::Rc;
 
@@ -64,20 +67,34 @@ pub enum WindowKind {
 
 /// Render invalidation handle supplied to reactive window content.
 #[derive(Clone)]
-pub struct RenderContext(Rc<dyn Fn()>);
+pub struct RenderContext {
+    render: Rc<dyn Fn()>,
+    services: PlatformServices,
+}
 
 impl RenderContext {
-    pub(crate) fn new(handler: impl Fn() + 'static) -> Self {
-        Self(Rc::new(handler))
+    pub(crate) fn new(handler: impl Fn() + 'static, services: PlatformServices) -> Self {
+        Self {
+            render: Rc::new(handler),
+            services,
+        }
     }
 
     /// Requests reconciliation from the current component state.
     pub fn request_render(&self) {
-        (self.0)();
+        (self.render)();
+    }
+
+    /// Returns the platform services registered by the mounting host.
+    pub fn services(&self) -> &PlatformServices {
+        &self.services
     }
 
     fn inert() -> Self {
-        Self(Rc::new(|| {}))
+        Self {
+            render: Rc::new(|| {}),
+            services: PlatformServices::default(),
+        }
     }
 }
 
@@ -102,20 +119,24 @@ impl WindowContent {
     }
 
     /// Retains a component and connects its messages to window reconciliation.
+    ///
+    /// Delivery follows [`crate::AppRuntime`]'s queued discipline: a message
+    /// emitted while an update is running — including a synchronously
+    /// delivered clipboard read completion — is queued and applied in order
+    /// after the current update returns, so `update` never re-enters itself.
     pub fn component<C>(component: C) -> Self
     where
         C: Component + 'static,
         C::Message: 'static,
     {
-        let component = Rc::new(RefCell::new(component));
+        let driver = Rc::new(ComponentDriver {
+            component: RefCell::new(component),
+            queue: RefCell::new(VecDeque::new()),
+            processing: Cell::new(false),
+        });
         Self::reactive(move |context| {
-            let target = component.clone();
-            let render_context = context.clone();
-            let dispatch = Dispatch::from_handler(move |message| {
-                target.borrow_mut().update(message);
-                render_context.request_render();
-            });
-            component.borrow().view(dispatch)
+            let dispatch = ComponentDriver::dispatch(&driver, &context);
+            driver.component.borrow().view(dispatch)
         })
     }
 
@@ -126,6 +147,53 @@ impl WindowContent {
 
     pub(crate) fn render(&self, context: RenderContext) -> Element {
         (self.render)(context)
+    }
+}
+
+/// Component state with its queued message delivery for window content.
+struct ComponentDriver<C: Component> {
+    component: RefCell<C>,
+    queue: RefCell<VecDeque<C::Message>>,
+    processing: Cell<bool>,
+}
+
+impl<C: Component + 'static> ComponentDriver<C> {
+    /// Builds a sender that queues into this driver and drains it.
+    fn dispatch(driver: &Rc<Self>, context: &RenderContext) -> Dispatch<C::Message> {
+        let driver = driver.clone();
+        let context = context.clone();
+        Dispatch::from_handler(move |message| {
+            driver.queue.borrow_mut().push_back(message);
+            Self::drain(&driver, &context);
+        })
+    }
+
+    /// Applies queued messages in order, then requests one reconciliation.
+    ///
+    /// The `processing` guard makes a nested emit — from inside `update` or
+    /// from a synchronous service completion — enqueue instead of re-enter.
+    fn drain(driver: &Rc<Self>, context: &RenderContext) {
+        if driver.processing.replace(true) {
+            return;
+        }
+        let mut delivered = false;
+        loop {
+            let message = driver.queue.borrow_mut().pop_front();
+            let Some(message) = message else {
+                break;
+            };
+            let update_context =
+                UpdateContext::new(Self::dispatch(driver, context), context.services().clone());
+            driver
+                .component
+                .borrow_mut()
+                .update(message, &update_context);
+            delivered = true;
+        }
+        driver.processing.set(false);
+        if delivered {
+            context.request_render();
+        }
     }
 }
 

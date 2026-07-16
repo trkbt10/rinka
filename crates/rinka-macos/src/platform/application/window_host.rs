@@ -94,7 +94,7 @@ fn build_window(
         list_registry.clone(),
         split_restore_pending,
     ));
-    let runtime = WindowRuntime::mount(renderer, spec.content.clone())
+    let runtime = WindowRuntime::mount(renderer, spec.content.clone(), pasteboard_platform_services())
         .map_err(|error| AppKitError(error.to_string()))?;
     runtime.with_renderer(|renderer| {
         if let Some(root) = renderer.mounted() {
@@ -402,6 +402,23 @@ fn mounted_handle_for_key<'a>(
     node.children()
         .iter()
         .find_map(|child| mounted_handle_for_key(child, key))
+}
+
+/// Reads the mounted label text declared under `key`, if present.
+fn mounted_label_text(node: &MountedNode<AppKitHandle>, key: &str) -> Option<String> {
+    if node
+        .element()
+        .key()
+        .is_some_and(|candidate| candidate.as_str() == key)
+    {
+        if let Props::Label { text, .. } = node.element().props() {
+            return Some(text.clone());
+        }
+        return None;
+    }
+    node.children()
+        .iter()
+        .find_map(|child| mounted_label_text(child, key))
 }
 
 fn mounted_scene(node: &MountedNode<AppKitHandle>) -> Option<&'static str> {
