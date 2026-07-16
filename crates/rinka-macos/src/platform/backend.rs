@@ -8,11 +8,15 @@ struct HandleInner {
     view: Id,
     child_host: Option<Id>,
     host_kind: HostKind,
+    /// The element's stable sibling key, kept because dock content children
+    /// are associated with their tab by key.
+    key: RefCell<Option<String>>,
     target: Option<Retained<ActionTarget>>,
     presentations: RefCell<Vec<Presentation>>,
     layout_constraints: RefCell<Vec<Id>>,
     stack_layout: RefCell<Option<StackLayout>>,
     pattern: RefCell<Option<UiPattern>>,
+    dock: RefCell<Option<DockState>>,
     content_fit_source_width_capped: Cell<bool>,
     table_delegate: RefCell<Option<Retained<TableDelegate>>>,
     text_delegate: RefCell<Option<Retained<TextAreaDelegate>>>,
@@ -72,11 +76,13 @@ impl AppKitHandle {
             view,
             child_host: None,
             host_kind,
+            key: RefCell::new(None),
             target,
             presentations: RefCell::new(Vec::new()),
             layout_constraints: RefCell::new(Vec::new()),
             stack_layout: RefCell::new(None),
             pattern: RefCell::new(None),
+            dock: RefCell::new(None),
             content_fit_source_width_capped: Cell::new(false),
             table_delegate: RefCell::new(None),
             text_delegate: RefCell::new(None),
@@ -103,11 +109,13 @@ impl AppKitHandle {
             view,
             child_host: Some(child_host),
             host_kind,
+            key: RefCell::new(None),
             target,
             presentations: RefCell::new(Vec::new()),
             layout_constraints: RefCell::new(Vec::new()),
             stack_layout: RefCell::new(None),
             pattern: RefCell::new(None),
+            dock: RefCell::new(None),
             content_fit_source_width_capped: Cell::new(false),
             table_delegate: RefCell::new(None),
             text_delegate: RefCell::new(None),
@@ -221,6 +229,7 @@ impl NativeBackend for AppKitBackend {
         events: EventBindings,
     ) -> Result<Self::Handle, Self::Error> {
         let handle = create_element(self.mtm, element, events.clone())?;
+        *handle.0.key.borrow_mut() = element.key().map(|key| key.as_str().to_owned());
         *handle.0.events.borrow_mut() = Some(events.clone());
         if let Some(menu) = element.context_menu_model() {
             install_element_context_menu(self.mtm, &handle, menu, &events);
@@ -659,12 +668,10 @@ fn create_element(
             accessibility_label,
             events,
         )),
-        // Typed unsupported-capability rejection until the AppKit dock
-        // realization lands (reports/document-tabs-and-splits); the tree is
-        // rejected, never substituted.
-        Props::Dock { .. } => Err(AppKitError(
-            "the AppKit host does not yet realize the tabbed-document dock".to_owned(),
-        )),
+        Props::Dock {
+            layout,
+            accessibility_label,
+        } => create_dock(mtm, layout, accessibility_label, events),
     }
 }
 

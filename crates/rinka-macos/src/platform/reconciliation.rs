@@ -230,12 +230,12 @@ fn apply_patch(
                 .ok_or_else(|| AppKitError("canvas handle has no native canvas view".to_owned()))?;
             canvas.apply_content(*size, scene, *accepts_input, *ime_caret);
         }
-        Props::Dock { .. } => {
-            // Unreachable while creation rejects the dock; kept typed so a
-            // bypassed rejection cannot silently drop the update.
-            return Err(AppKitError(
-                "the AppKit host does not yet realize the tabbed-document dock".to_owned(),
-            ));
+        Props::Dock {
+            layout,
+            accessibility_label,
+        } => {
+            set_string(handle.view(), SET_ACCESSIBILITY_LABEL, accessibility_label);
+            reconcile_dock(mtm, handle, layout, patch.dock_tab_menus())?;
         }
         Props::Status { title, message, .. } => {
             if let Some(title_view) = handle.0.auxiliaries.first() {
@@ -410,6 +410,12 @@ fn insert_child(
                 let _: () = msg_send![presentation.view.as_object(), setAutoresizingMask: 2_usize];
                 let _: () =
                     msg_send![parent.view(), setDocumentView: presentation.view.as_object()];
+            }
+            HostKind::Element(ElementKind::Dock) => {
+                let key = child.0.key.borrow().clone().ok_or_else(|| {
+                    AppKitError("dock content child has no tab-id key".to_owned())
+                })?;
+                dock_attach_content(parent, &key, child)?;
             }
             HostKind::Element(ElementKind::Pattern) => {
                 let view_controller = if child.element_kind() == Some(ElementKind::Pattern) {
@@ -631,7 +637,8 @@ fn remove_child(
                 ElementKind::Stack
                 | ElementKind::List
                 | ElementKind::ListRow
-                | ElementKind::Pattern,
+                | ElementKind::Pattern
+                | ElementKind::Dock,
             ) => {
                 if parent.element_kind() == Some(ElementKind::Pattern) {
                     let item = presentation.owner.as_ref().ok_or_else(|| {
@@ -640,6 +647,8 @@ fn remove_child(
                     let _: () = msg_send![parent.split_controller()?, removeSplitViewItem: item.as_object()];
                 } else if parent.element_kind() == Some(ElementKind::Stack) {
                     let _: () = msg_send![presentation.view.as_object(), removeFromSuperview];
+                } else if parent.element_kind() == Some(ElementKind::Dock) {
+                    dock_detach_content(parent, child)?;
                 }
             }
             HostKind::Element(ElementKind::Scroll) => {
@@ -714,6 +723,10 @@ fn move_child(
     }
     match parent.element_kind() {
         Some(ElementKind::Stack) => {}
+        // The order of a dock's content children has no native meaning: each
+        // content view is homed by its tab id through the layout, so a move
+        // only updates the logical bookkeeping below.
+        Some(ElementKind::Dock) => {}
         Some(ElementKind::List) => {
             let delegate = parent.0.table_delegate.borrow();
             let delegate = delegate

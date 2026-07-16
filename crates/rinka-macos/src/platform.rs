@@ -8,8 +8,9 @@ use rinka_core::{
     AcceleratorOutcome, AcceleratorRouter, Align, ApplicationSpec, Axis, ButtonMaterial,
     ButtonRole, CanvasColor, CanvasPoint, CanvasRect, CanvasSize, CanvasVector, CollectionPattern,
     ContextMenu, ControlSize, DialogButtonRole, DialogDescription, DialogOutcome, DialogRequest,
-    DialogResponder, DialogService, DragPayload, DrawCommand, DrawScene, DropPosition, DropTarget,
-    Element, ElementKind, EventBindings, FileDrop, HighlightRole, HighlightSpan, HighlightSpans,
+    DialogResponder, DialogService, DockEdge, DockEvent, DockGroup, DockLayout, DockNode, DockTab,
+    DockTabMenus, DragPayload, DrawCommand, DrawScene, DropPosition, DropTarget, Element,
+    ElementKind, EventBindings, FileDrop, HighlightRole, HighlightSpan, HighlightSpans,
     ImageContent, ImageScaling, ImeEvent, InputKind, Justify, KeyChord, KeyEvent, KeyIdentity,
     KeyRoutingContext, LineWidth, ListRowRole, MenuBar, MenuBarActivation, MenuBarBindings,
     MenuBarEntry, MenuBarMenuRole, MenuBarRouter, MenuBarUpdate, MenuEntry, MenuItem, Modifiers,
@@ -21,6 +22,7 @@ use rinka_core::{
     ToolbarItemKind, ToolbarPlacement, UiPattern, WindowId, WindowKind, WindowRuntime, WindowSpec,
 };
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::error::Error;
 use std::ffi::{CStr, c_char};
 use std::fmt;
@@ -40,6 +42,7 @@ include!("platform/key_dispatch.rs");
 include!("platform/menu_bar_host.rs");
 include!("platform/pasteboard.rs");
 include!("platform/drag_drop.rs");
+include!("platform/dock_area.rs");
 include!("platform/collection_delegate.rs");
 include!("platform/backend.rs");
 include!("platform/collection_mount.rs");
