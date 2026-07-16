@@ -428,6 +428,7 @@ fn mounted_scene(node: &MountedNode<AppKitHandle>) -> Option<&'static str> {
         ("directory-busy", "busy"),
         ("directory-error", "error"),
         ("canvas-pane", "canvas"),
+        ("editor-pane", "editor"),
     ]
     .into_iter()
     .find_map(|(key, scene)| mounted_handle_for_key(node, key).map(|_| scene))

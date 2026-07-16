@@ -215,9 +215,9 @@ impl ApplicationDelegate {
             .unwrap_or_else(|_| panic!("RINKA_APPKIT_SCENE_PROBE must be valid UTF-8"));
         if !matches!(
             expected_scene.as_str(),
-            "ready" | "empty" | "busy" | "error" | "canvas"
+            "ready" | "empty" | "busy" | "error" | "canvas" | "editor"
         ) {
-            panic!("RINKA_APPKIT_SCENE_PROBE expects ready, empty, busy, error, or canvas");
+            panic!("RINKA_APPKIT_SCENE_PROBE expects ready, empty, busy, error, canvas, or editor");
         }
 
         let observed_scene = {

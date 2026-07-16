@@ -275,6 +275,30 @@ fn write_props(output: &mut String, props: &Props) {
             json(accessibility_label)
         )
         .unwrap(),
+        Props::TextArea {
+            content,
+            spans,
+            selection,
+            read_only,
+            role,
+            accessibility_label,
+        } => write!(
+            output,
+            "{{\"charLen\":{},\"revisionSet\":{},\"revisionEdit\":{},\"spanCount\":{},\"spansRevision\":{},\"selection\":{},\"readOnly\":{},\"role\":{},\"accessibilityLabel\":{}}}",
+            content.char_len(),
+            content.revision().set,
+            content.revision().edit,
+            spans.spans().len(),
+            spans.revision(),
+            selection.map_or_else(
+                || "null".to_owned(),
+                |selection| json(&format!("{}..{}", selection.anchor, selection.head))
+            ),
+            read_only,
+            json(&format!("{role:?}")),
+            json(accessibility_label)
+        )
+        .unwrap(),
         Props::Image {
             content,
             scaling,
@@ -327,12 +351,13 @@ mod tests {
     #[test]
     fn extraction_contains_every_scene_and_accessible_label() {
         let output = extract_all_scenes();
-        for scene in ["ready", "empty", "busy", "error", "canvas"] {
+        for scene in ["ready", "empty", "busy", "error", "canvas", "editor"] {
             assert!(output.contains(&format!("\"id\":\"{scene}\"")));
         }
         assert!(output.contains("accessibilityLabel"));
         assert!(output.contains("Connection Activity"));
         assert!(output.contains("Canvas test pattern"));
+        assert!(output.contains("Editor for view.rs"));
     }
 
     #[test]

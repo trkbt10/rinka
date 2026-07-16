@@ -1,14 +1,16 @@
 //! Deterministic consumer scenes shared by both native hosts.
 
+use crate::editor::EditorState;
 use rinka::{
     Accelerator, Align, ApplicationSpec, Axis, ButtonRole, CanvasColor, CanvasPoint, CanvasRect,
     CanvasSize, ClipboardError, CollectionPattern, Component, ControlSize, Dispatch, DrawScene,
     Element, ImageContent, ImageScaling, Justify, KeyChord, LineWidth, MenuEntry, MenuItem,
     PanelBehavior, PointerEvent, PointerPhase, Size, SortDirection, Spacing, StatusTone, Submenu,
-    Symbol, TableColumn, TableSort, TextRole, ToolbarAction, ToolbarChoice, ToolbarDisplay,
-    ToolbarGroupDisplay, ToolbarItem, ToolbarPlacement, UiPattern, UpdateContext, WindowContent,
-    WindowId, WindowKind, WindowSpec, button, canvas, column, image, label, list, list_row,
-    mount_pattern, progress, row, separator, spacer, status, toggle,
+    Symbol, TableColumn, TableSort, TextChange, TextRole, TextSelection, ToolbarAction,
+    ToolbarChoice, ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem, ToolbarPlacement, UiPattern,
+    UpdateContext, WindowContent, WindowId, WindowKind, WindowSpec, button, canvas, column, image,
+    label, list, list_row, mount_pattern, progress, row, separator, spacer, status, text_area,
+    toggle,
 };
 
 /// Meaningful UI state used by the consumer verification matrix.
@@ -24,6 +26,8 @@ pub enum Scene {
     Error,
     /// Owned-drawing canvas test pattern.
     Canvas,
+    /// Native multi-line text editor over a real file.
+    Editor,
 }
 
 impl Scene {
@@ -35,6 +39,7 @@ impl Scene {
             Self::Busy => "busy",
             Self::Error => "error",
             Self::Canvas => "canvas",
+            Self::Editor => "editor",
         }
     }
 
@@ -46,18 +51,20 @@ impl Scene {
             "busy" => Some(Self::Busy),
             "error" => Some(Self::Error),
             "canvas" => Some(Self::Canvas),
+            "editor" => Some(Self::Editor),
             _ => None,
         }
     }
 
     /// Returns every required state in deterministic order.
-    pub const fn all() -> [Self; 5] {
+    pub const fn all() -> [Self; 6] {
         [
             Self::Ready,
             Self::Empty,
             Self::Busy,
             Self::Error,
             Self::Canvas,
+            Self::Editor,
         ]
     }
 }
@@ -143,6 +150,7 @@ struct ExplorerComponent {
     duplicated: Vec<FileKey>,
     favorite_files: Vec<FileKey>,
     last_file_action: Option<String>,
+    editor: EditorState,
 }
 
 impl ExplorerComponent {
@@ -183,6 +191,7 @@ impl ExplorerComponent {
             duplicated: Vec::new(),
             favorite_files: Vec::new(),
             last_file_action: None,
+            editor: EditorState::load(),
         }
     }
 
@@ -285,6 +294,12 @@ enum ExplorerMessage {
     CopyPath,
     PastePath,
     ClipboardRead(Result<Option<String>, ClipboardError>),
+    EditorChanged(TextChange),
+    EditorSelectionChanged(TextSelection),
+    EditorSetReadOnly(bool),
+    EditorJumpEnd,
+    EditorRehighlight,
+    EditorReload,
 }
 
 impl Component for ExplorerComponent {
@@ -390,6 +405,14 @@ impl Component for ExplorerComponent {
                     Err(error) => format!("Clipboard error: {error}"),
                 });
             }
+            ExplorerMessage::EditorChanged(change) => self.editor.apply_change(&change),
+            ExplorerMessage::EditorSelectionChanged(selection) => {
+                self.editor.store_selection(selection);
+            }
+            ExplorerMessage::EditorSetReadOnly(read_only) => self.editor.set_read_only(read_only),
+            ExplorerMessage::EditorJumpEnd => self.editor.jump_to_end(),
+            ExplorerMessage::EditorRehighlight => self.editor.rehighlight_all(),
+            ExplorerMessage::EditorReload => self.editor.reload(),
         }
     }
 
@@ -859,7 +882,76 @@ fn scene_body(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) ->
         .spacing(Spacing::Section)
         .with_key("directory-error-stack"),
         Scene::Canvas => canvas_pane(model, dispatch),
+        Scene::Editor => editor_pane(model, dispatch),
     }
+}
+
+/// The native multi-line editor over a real file: monospace text area with
+/// consumer-computed highlight spans, controlled selection, and read-only
+/// mode.
+fn editor_pane(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) -> Element {
+    let read_only_dispatch = dispatch.clone();
+    let jump_dispatch = dispatch.clone();
+    let rehighlight_dispatch = dispatch.clone();
+    let reload_dispatch = dispatch.clone();
+    let change_dispatch = dispatch.clone();
+    let file_name = model.editor.file_name().to_owned();
+
+    let mut area = text_area(
+        model.editor.content(),
+        format!("Editor for {file_name}"),
+        move |change| change_dispatch.emit(ExplorerMessage::EditorChanged(change)),
+    )
+    .text_role(TextRole::Monospace)
+    .read_only(model.editor.read_only())
+    .highlight_spans(model.editor.highlight())
+    .on_selection_change(move |selection| {
+        dispatch.emit(ExplorerMessage::EditorSelectionChanged(selection));
+    });
+    if let Some(selection) = model.editor.selection() {
+        area = area.text_selection(selection);
+    }
+
+    column([
+        row([
+            toggle(
+                "Read-only",
+                model.editor.read_only(),
+                "Reject edits while keeping selection and copying",
+                move |value| read_only_dispatch.emit(ExplorerMessage::EditorSetReadOnly(value)),
+            )
+            .control_size(ControlSize::Small)
+            .with_key("editor-readonly"),
+            button(
+                "Go to End",
+                "Move the cursor to the end of the document",
+                move || jump_dispatch.emit(ExplorerMessage::EditorJumpEnd),
+            )
+            .with_key("editor-jump-end"),
+            button(
+                "Rehighlight",
+                "Recompute highlighting for the whole document",
+                move || rehighlight_dispatch.emit(ExplorerMessage::EditorRehighlight),
+            )
+            .with_key("editor-rehighlight"),
+            button(
+                "Reload",
+                "Restore the document from its original text",
+                move || reload_dispatch.emit(ExplorerMessage::EditorReload),
+            )
+            .with_key("editor-reload"),
+            spacer(true, false).with_key("editor-toolbar-space"),
+            label(model.editor.status_line())
+                .text_role(TextRole::Secondary)
+                .with_key("editor-status"),
+        ])
+        .align(Align::Center)
+        .padding(Spacing::Content)
+        .with_key("editor-toolbar"),
+        area.with_key("editor-textarea"),
+    ])
+    .spacing(Spacing::Joined)
+    .with_key("editor-pane")
 }
 
 /// Logical cell size of the deterministic canvas grid.
@@ -1447,6 +1539,11 @@ fn inspector(model: &ExplorerComponent) -> Element {
             "The content pane owns its drawing.",
             StatusTone::Informational,
         ),
+        Scene::Editor => inspector_status(
+            "Native editor",
+            "The text area is a native text view; highlighting is computed by this consumer.",
+            StatusTone::Informational,
+        ),
     };
 
     column([
@@ -1522,12 +1619,15 @@ fn scene_summary(model: &ExplorerComponent) -> String {
         Scene::Busy => "Refreshing…".to_owned(),
         Scene::Error => "No items available".to_owned(),
         Scene::Canvas => "Deterministic canvas test pattern".to_owned(),
+        Scene::Editor => format!("Editing {}", model.editor.file_name()),
     }
 }
 
 const fn connection_status(scene: Scene) -> &'static str {
     match scene {
-        Scene::Ready | Scene::Empty | Scene::Busy | Scene::Canvas => "Connected securely",
+        Scene::Ready | Scene::Empty | Scene::Busy | Scene::Canvas | Scene::Editor => {
+            "Connected securely"
+        }
         Scene::Error => "Connection interrupted",
     }
 }
