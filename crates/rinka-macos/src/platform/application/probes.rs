@@ -12,6 +12,7 @@ struct ApplicationDelegateIvars {
     toolbar_delegates: RefCell<Vec<Retained<ToolbarDelegate>>>,
     accelerator_router: Rc<RefCell<AcceleratorRouter>>,
     window_identities: WindowIdentityRegistry,
+    menu_bar_host: MenuBarHost,
     key_monitor: RefCell<Option<Id>>,
     transition_probe: RefCell<Option<TransitionProbe>>,
     scene_probe: RefCell<Option<SceneProbe>>,
@@ -401,6 +402,14 @@ define_class!(
         #[unsafe(method(runTextInputProbe:))]
         fn run_text_input_probe(&self, _sender: *mut AnyObject) {
             self.advance_text_input_probe();
+        }
+
+        #[unsafe(method(windowDidBecomeKey:))]
+        fn window_did_become_key(&self, _notification: &AnyObject) {
+            // The effective menu bar follows the key window: focus switches
+            // swap (or refresh) the installed declaration so menu commands
+            // route to the newly focused window's component.
+            self.ivars().menu_bar_host.refresh();
         }
 
         #[unsafe(method(windowDidResize:))]

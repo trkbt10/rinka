@@ -236,19 +236,26 @@ unsafe fn first_responder_is_text_input(window: &AnyObject) -> bool {
 
 /// Installs the application's single key-down monitor and returns its token.
 ///
-/// The token must stay retained for the application lifetime; the router and
-/// registry are consulted live on every event, so reconciliation changes
-/// entries without this connection ever being remade.
+/// The token must stay retained for the application lifetime; the menu bar,
+/// the router, and the registry are consulted live on every event, so
+/// reconciliation changes entries without this connection ever being remade.
+///
+/// Precedence: a chord the effective menu bar claims is returned untouched —
+/// AppKit's native menu key-equivalent dispatch fires the menu item exactly
+/// once (shadowing any same-chord accelerator entry) — and only unclaimed
+/// chords are routed through the accelerator tables.
 fn install_accelerator_monitor(
     router: Rc<RefCell<AcceleratorRouter>>,
     registry: WindowIdentityRegistry,
+    menu_bar: MenuBarHost,
 ) -> Id {
     // The probes assert routing outcomes from the log, so each routed chord
     // is reported with the focus fact it was routed under. The text-input
     // probe reads the same lines to prove a focused canvas counts as text
     // input for withholding.
     let log_outcomes = std::env::var_os("RINKA_APPKIT_ACCELERATOR_PROBE").is_some()
-        || std::env::var_os("RINKA_APPKIT_TEXT_INPUT_PROBE").is_some();
+        || std::env::var_os("RINKA_APPKIT_TEXT_INPUT_PROBE").is_some()
+        || std::env::var_os("RINKA_APPKIT_MENU_BAR_PROBE").is_some();
     let handler = block2::RcBlock::new(move |event: *mut AnyObject| -> *mut AnyObject {
         // SAFETY: AppKit invokes local monitors on the main thread with a
         // live NSEvent matching the requested key-down mask.
@@ -270,6 +277,15 @@ fn install_accelerator_monitor(
                 text_input_focused: NonNull::new(key_window)
                     .is_some_and(|window| first_responder_is_text_input(window.as_ref())),
             };
+            if menu_bar.claims_chord(context.key_window.as_ref(), chord) {
+                if log_outcomes {
+                    eprintln!(
+                        "Rinka accelerator event chord={chord} text_focus={} outcome=menu-bar-claimed",
+                        context.text_input_focused
+                    );
+                }
+                return event;
+            }
             let outcome = router.borrow().route(chord, &context);
             if log_outcomes {
                 let outcome_text = match &outcome {

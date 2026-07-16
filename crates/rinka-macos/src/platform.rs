@@ -11,12 +11,13 @@ use rinka_core::{
     DialogResponder, DialogService, DragPayload, DrawCommand, DrawScene, DropPosition, DropTarget,
     Element, ElementKind, EventBindings, FileDrop, HighlightRole, HighlightSpan, HighlightSpans,
     ImageContent, ImageScaling, ImeEvent, InputKind, Justify, KeyChord, KeyEvent, KeyIdentity,
-    KeyRoutingContext, LineWidth, ListRowRole, MenuEntry, MenuItem, Modifiers, MonospaceMetrics,
-    MountedNode, NativeBackend, PanelBehavior, PatternRegion, PayloadDrop, PointerButton,
-    PointerEvent, PointerModifiers, PointerPhase, PreeditCaret, PrimaryModifier, PropertyPatch,
-    Props, Renderer, SortDirection, Spacing, StatusTone, Symbol, TableColumn, TableSort,
-    TextChange, TextContent, TextEdit, TextRange, TextRevision, TextRole, TextSelection,
-    TextSyncAction, ToolbarAction, ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem,
+    KeyRoutingContext, LineWidth, ListRowRole, MenuBar, MenuBarActivation, MenuBarBindings,
+    MenuBarEntry, MenuBarMenuRole, MenuBarRouter, MenuBarUpdate, MenuEntry, MenuItem, Modifiers,
+    MonospaceMetrics, MountedNode, NativeBackend, PanelBehavior, PatternRegion, PayloadDrop,
+    PointerButton, PointerEvent, PointerModifiers, PointerPhase, PreeditCaret, PrimaryModifier,
+    PropertyPatch, Props, Renderer, SortDirection, Spacing, StandardItem, StatusTone, Symbol,
+    TableColumn, TableSort, TextChange, TextContent, TextEdit, TextRange, TextRevision, TextRole,
+    TextSelection, TextSyncAction, ToolbarAction, ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem,
     ToolbarItemKind, ToolbarPlacement, UiPattern, WindowId, WindowKind, WindowRuntime, WindowSpec,
 };
 use std::cell::{Cell, RefCell};
@@ -35,6 +36,7 @@ include!("platform/native_runtime.rs");
 include!("platform/text_editing.rs");
 include!("platform/canvas_surface.rs");
 include!("platform/key_dispatch.rs");
+include!("platform/menu_bar_host.rs");
 include!("platform/pasteboard.rs");
 include!("platform/drag_drop.rs");
 include!("platform/collection_delegate.rs");

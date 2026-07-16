@@ -628,7 +628,8 @@ fn append_ns_menu_entries(
             }
             MenuEntry::Item(item) => {
                 let target = make_target(item);
-                let native = create_ns_menu_item(item, ancestors_enabled, &target);
+                let native =
+                    create_ns_menu_item(item, ancestors_enabled, &**target, sel!(performAction:));
                 // SAFETY: NSMenu retains the inserted item.
                 unsafe {
                     let _: () = msg_send![menu.as_object(), addItem: native.as_object()];
@@ -661,10 +662,11 @@ fn append_ns_menu_entries(
     }
 }
 
-fn create_ns_menu_item(
+fn create_ns_menu_item<T: objc2::Message>(
     item: &MenuItem,
     ancestors_enabled: bool,
-    target: &Retained<ActionTarget>,
+    target: &T,
+    action: objc2::runtime::Sel,
 ) -> Id {
     let title = ns_string(&item.label);
     let key = ns_string("");
@@ -678,12 +680,12 @@ fn create_ns_menu_item(
         let allocated: *mut AnyObject = msg_send![objc2::class!(NSMenuItem), alloc];
         let pointer: *mut AnyObject = msg_send![allocated,
             initWithTitle: title.as_object(),
-            action: sel!(performAction:),
+            action: action,
             keyEquivalent: key.as_object()
         ];
         let native = Id::from_owned(pointer);
-        let _: () = msg_send![native.as_object(), setTarget: &**target];
-        let _: () = msg_send![native.as_object(), setRepresentedObject: &**target];
+        let _: () = msg_send![native.as_object(), setTarget: target];
+        let _: () = msg_send![native.as_object(), setRepresentedObject: target];
         let _: () =
             msg_send![native.as_object(), setEnabled: ancestors_enabled && item.enabled];
         let _: () = msg_send![native.as_object(), setState: isize::from(item.checked)];

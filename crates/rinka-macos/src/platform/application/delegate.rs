@@ -12,6 +12,13 @@ impl ApplicationDelegate {
                 },
             )
         });
+        let window_identities: WindowIdentityRegistry = Rc::new(RefCell::new(Vec::new()));
+        let menu_bar_host = MenuBarHost::new(
+            mtm,
+            application.name.clone(),
+            application.menu_bar.clone(),
+            window_identities.clone(),
+        );
         let object = Self::alloc(mtm).set_ivars(ApplicationDelegateIvars {
             application: RefCell::new(Some(application)),
             transition_sizes,
@@ -25,7 +32,8 @@ impl ApplicationDelegate {
             split_restore_pending: Rc::new(Cell::new(false)),
             toolbar_delegates: RefCell::new(Vec::new()),
             accelerator_router: Rc::new(RefCell::new(AcceleratorRouter::new())),
-            window_identities: Rc::new(RefCell::new(Vec::new())),
+            window_identities,
+            menu_bar_host,
             key_monitor: RefCell::new(None),
             transition_probe: RefCell::new(None),
             scene_probe: RefCell::new(None),
@@ -135,6 +143,17 @@ impl ApplicationDelegate {
                         .accelerator_router
                         .borrow_mut()
                         .register_window(window.id.clone(), accelerator_bindings);
+                    // The same discipline serves the menu bar: one stable
+                    // slot per window, replaced in place on every render,
+                    // and a per-window reconciled hook so the installed
+                    // NSMenu reflects the freshest declaration.
+                    let menu_bar_bindings =
+                        renderer.with_renderer(|renderer| renderer.menu_bar_bindings().clone());
+                    self.ivars()
+                        .menu_bar_host
+                        .register_window(window.id.clone(), menu_bar_bindings);
+                    let menu_bar_host = self.ivars().menu_bar_host.clone();
+                    renderer.set_reconciled_handler(move || menu_bar_host.refresh());
                     self.ivars()
                         .window_identities
                         .borrow_mut()
@@ -183,12 +202,17 @@ impl ApplicationDelegate {
         }
         // One application-local key monitor delivers every declared
         // accelerator; the router and the per-window tables it consults are
-        // updated in place, so this connection is never remade.
+        // updated in place, so this connection is never remade. Chords the
+        // effective menu bar claims pass through to native menu dispatch.
         let monitor = install_accelerator_monitor(
             self.ivars().accelerator_router.clone(),
             self.ivars().window_identities.clone(),
+            self.ivars().menu_bar_host.clone(),
         );
         *self.ivars().key_monitor.borrow_mut() = Some(monitor);
+        // Install the effective menu bar for the initial declarations; the
+        // key-window delegate callback keeps it following focus afterwards.
+        self.ivars().menu_bar_host.refresh();
         // SAFETY: Required for a Cargo-launched, unbundled AppKit process.
         unsafe {
             let _: () = msg_send![app, activate];
