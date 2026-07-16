@@ -108,6 +108,7 @@ impl fmt::Debug for RenderContext {
 #[derive(Clone)]
 pub struct WindowContent {
     render: Rc<dyn Fn(RenderContext) -> Element>,
+    dialogs: Rc<RefCell<VecDeque<DialogRequest>>>,
 }
 
 impl WindowContent {
@@ -115,6 +116,7 @@ impl WindowContent {
     pub fn reactive(render: impl Fn(RenderContext) -> Element + 'static) -> Self {
         Self {
             render: Rc::new(render),
+            dialogs: Rc::new(RefCell::new(VecDeque::new())),
         }
     }
 
@@ -147,6 +149,15 @@ impl WindowContent {
 
     pub(crate) fn render(&self, context: RenderContext) -> Element {
         (self.render)(context)
+    }
+
+    /// Drains the dialog requests queued by updates rendered so far.
+    pub(crate) fn take_dialog_requests(&self) -> Vec<DialogRequest> {
+        self.dialogs.borrow_mut().drain(..).collect()
+    }
+
+    pub(crate) fn clear_dialog_requests(&self) {
+        self.dialogs.borrow_mut().clear();
     }
 }
 

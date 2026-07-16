@@ -118,6 +118,15 @@ impl WindowProjection {
         self.runtime.set_reconciled_handler(handler);
     }
 
+    /// Installs the platform's window-modal dialog presenter.
+    ///
+    /// A projection without a presenter records a dialog request as the typed
+    /// [`RenderError::Dialog`] readable through [`Self::take_error`], never
+    /// dropping it silently.
+    pub fn set_dialog_presenter(&self, presenter: impl Fn(crate::DialogRequest) + 'static) {
+        self.runtime.set_dialog_presenter(presenter);
+    }
+
     /// Takes the latest asynchronous content or tree error.
     pub fn take_error(&self) -> Option<RenderError<Infallible>> {
         self.runtime.take_error()
@@ -152,6 +161,7 @@ mod tests {
 
         fn update(&mut self, (): Self::Message, _context: &UpdateContext<Self::Message>) {
             self.value += 1;
+            Effects::none()
         }
 
         fn view(&self, dispatch: Dispatch<Self::Message>) -> Element {

@@ -88,6 +88,7 @@ impl Component for ShortcutComponent {
             ShortcutMessage::SetSaveEnabled(enabled) => self.save_enabled = enabled,
             ShortcutMessage::DeclareExtra => self.declare_extra = true,
         }
+        Effects::none()
     }
 
     fn view(&self, dispatch: Dispatch<Self::Message>) -> Element {
@@ -285,6 +286,7 @@ impl Component for ScopedComponent {
         match message {
             ScopedMessage::Fired(id) => self.fired.push(id),
         }
+        Effects::none()
     }
 
     fn view(&self, dispatch: Dispatch<Self::Message>) -> Element {

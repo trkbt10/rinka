@@ -5,12 +5,15 @@ mod clipboard;
 pub use clipboard::FakeClipboard;
 
 use rinka_core::{
-    ContextMenu, Element, EventBindings, MonospaceMetrics, NativeBackend, PropertyPatch, Props,
-    TextChange, TextEdit, TextRevision, TextSelection, TextSyncAction,
+    ContextMenu, DialogDescription, DialogOutcome, DialogRequest, DialogResponder, Element,
+    EventBindings, MonospaceMetrics, NativeBackend, PropertyPatch, Props, TextChange, TextEdit,
+    TextRevision, TextSelection, TextSyncAction,
 };
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
+use std::rc::Rc;
 
 /// Stable synthetic native handle.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -124,6 +127,83 @@ struct Node {
     events: EventBindings,
     children: Vec<Handle>,
     text_area: Option<TextAreaModel>,
+}
+
+struct PresentedDialog {
+    description: DialogDescription,
+    responder: Option<DialogResponder>,
+}
+
+/// Deterministic window-modal dialog presenter for headless consumer tests.
+///
+/// The presenter records every request it receives, in order, and lets a
+/// test script the user's answer by delivering a [`DialogOutcome`] through
+/// the retained single-use responder — the headless stand-in for a native
+/// sheet completing.
+#[derive(Clone, Default)]
+pub struct FakeDialogPresenter {
+    dialogs: Rc<RefCell<Vec<PresentedDialog>>>,
+}
+
+impl FakeDialogPresenter {
+    /// Creates a presenter with no recorded presentations.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the presenter closure to install on a runtime.
+    pub fn handler(&self) -> impl Fn(DialogRequest) + 'static {
+        let dialogs = self.dialogs.clone();
+        move |request| {
+            let (description, responder) = request.into_parts();
+            dialogs.borrow_mut().push(PresentedDialog {
+                description,
+                responder: Some(responder),
+            });
+        }
+    }
+
+    /// Returns how many dialogs have been presented so far.
+    pub fn presented_count(&self) -> usize {
+        self.dialogs.borrow().len()
+    }
+
+    /// Reads the description of the presentation at `index`.
+    pub fn description(&self, index: usize) -> Option<DialogDescription> {
+        self.dialogs
+            .borrow()
+            .get(index)
+            .map(|dialog| dialog.description.clone())
+    }
+
+    /// Scripts the outcome of the presentation at `index`.
+    ///
+    /// Returns whether a responder was still retained; a second delivery to
+    /// the same presentation returns `false` because native completion
+    /// handlers run exactly once.
+    pub fn deliver(&self, index: usize, outcome: DialogOutcome) -> bool {
+        let responder = self
+            .dialogs
+            .borrow_mut()
+            .get_mut(index)
+            .and_then(|dialog| dialog.responder.take());
+        match responder {
+            Some(responder) => {
+                responder.deliver(outcome);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+impl fmt::Debug for FakeDialogPresenter {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FakeDialogPresenter")
+            .field("presented", &self.presented_count())
+            .finish()
+    }
 }
 
 /// Deterministic adapter diagnostic.

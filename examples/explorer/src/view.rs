@@ -12,6 +12,7 @@ use rinka::{
     label, list, list_row, mount_pattern, progress, row, separator, spacer, status, text_area,
     toggle,
 };
+use std::path::PathBuf;
 
 /// Meaningful UI state used by the consumer verification matrix.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -414,6 +415,7 @@ impl Component for ExplorerComponent {
             ExplorerMessage::EditorRehighlight => self.editor.rehighlight_all(),
             ExplorerMessage::EditorReload => self.editor.reload(),
         }
+        Effects::none()
     }
 
     fn view(&self, dispatch: Dispatch<Self::Message>) -> Element {
@@ -607,7 +609,7 @@ fn explorer_content(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessag
         [
             sidebar(model, dispatch.clone()),
             directory_content(model, dispatch.clone()),
-            inspector(model),
+            inspector(model, dispatch.clone()),
         ],
     )
     .with_key("explorer-workspace")
@@ -1315,7 +1317,7 @@ fn file_row(
 }
 
 fn file_records(model: &ExplorerComponent) -> Vec<FileRecord> {
-    let mut records = vec![
+    let mut records: Vec<FileRecord> = vec![
         FileRecord {
             key: FileKey::Src,
             title: file_title(FileKey::Src),
@@ -1383,7 +1385,13 @@ fn file_records(model: &ExplorerComponent) -> Vec<FileRecord> {
     records
 }
 
-fn child_file_records(parent: FileKey) -> Vec<FileRecord> {
+fn child_file_records(model: &ExplorerComponent, parent: FileKey) -> Vec<FileRecord> {
+    let mut children = child_file_catalog(parent);
+    children.retain(|record| !model.deleted_files.contains(&record.key));
+    children
+}
+
+fn child_file_catalog(parent: FileKey) -> Vec<FileRecord> {
     match parent {
         FileKey::Src => vec![
             FileRecord {
@@ -1428,14 +1436,26 @@ fn child_file_records(parent: FileKey) -> Vec<FileRecord> {
 fn file_record_for_key(model: &ExplorerComponent, key: FileKey) -> Option<FileRecord> {
     file_records(model).into_iter().find_map(|record| {
         (record.key == key).then_some(record).or_else(|| {
-            child_file_records(record.key)
+            child_file_records(model, record.key)
                 .into_iter()
                 .find(|child| child.key == key)
         })
     })
 }
 
-fn inspector(model: &ExplorerComponent) -> Element {
+/// Compacts a path to its final two components for narrow-pane display.
+fn compact_path(path: &std::path::Path) -> String {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    match path.parent().and_then(std::path::Path::file_name) {
+        Some(parent) => format!("{}/{name}", parent.to_string_lossy()),
+        None => name,
+    }
+}
+
+fn inspector(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) -> Element {
     let detail = match model.scene {
         Scene::Ready if model.selected_file.is_some() => {
             let record = file_record_for_key(model, model.selected_file.expect("selection exists"))
@@ -1488,14 +1508,62 @@ fn inspector(model: &ExplorerComponent) -> Element {
                     );
                 }
             }
+            if !model.uploads.is_empty() {
+                details.push(
+                    label(format!("Uploads queued: {}", model.uploads.len()))
+                        .text_role(TextRole::Secondary)
+                        .with_key("upload-count"),
+                );
+                details.push(
+                    label(compact_path(&model.uploads[0]))
+                        .text_role(TextRole::Monospace)
+                        .with_key("upload-first-path"),
+                );
+            }
+            if let Some(path) = &model.download_target {
+                details.push(
+                    label("Download target")
+                        .text_role(TextRole::Secondary)
+                        .with_key("download-caption"),
+                );
+                details.push(
+                    label(compact_path(path))
+                        .text_role(TextRole::Monospace)
+                        .with_key("download-path"),
+                );
+            }
+            let delete_dispatch = dispatch.clone();
+            let upload_dispatch = dispatch.clone();
+            let download_dispatch = dispatch.clone();
+            let delete_key = record.key;
+            let download_key = record.key;
             details.extend([
                 spacer(false, true).with_key("inspector-space"),
                 row([
                     button(
-                        "Delete…",
-                        format!("Delete {}", record.title),
-                        announce("delete"),
+                        "Upload Files…",
+                        "Upload files to this location",
+                        move || {
+                            upload_dispatch.emit(ExplorerMessage::RequestUpload);
+                        },
                     )
+                    .with_key("upload-files"),
+                    spacer(true, false).with_key("inspector-transfer-space"),
+                    button(
+                        "Download…",
+                        format!("Download {}", record.title),
+                        move || {
+                            download_dispatch.emit(ExplorerMessage::RequestDownload(download_key));
+                        },
+                    )
+                    .with_key("download-file"),
+                ])
+                .align(Align::Center)
+                .with_key("inspector-transfers"),
+                row([
+                    button("Delete…", format!("Delete {}", record.title), move || {
+                        delete_dispatch.emit(ExplorerMessage::ConfirmDelete(delete_key));
+                    })
                     .button_role(ButtonRole::Destructive)
                     .with_key("delete-file"),
                     spacer(true, false).with_key("inspector-action-space"),

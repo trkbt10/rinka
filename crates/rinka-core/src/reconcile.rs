@@ -1,6 +1,7 @@
 //! Keyed reconciliation into retained native objects.
 
 use crate::accelerator::AcceleratorBindings;
+use crate::dialog::DialogError;
 use crate::validation::{TreeError, validate_tree};
 use crate::{Element, EventBindings, NativeBackend, PropertyPatch};
 use std::error::Error;
@@ -13,6 +14,8 @@ pub enum RenderError<E> {
     Tree(TreeError),
     /// The native adapter rejected an operation.
     Backend(E),
+    /// An update requested a dialog that cannot be presented.
+    Dialog(DialogError),
 }
 
 impl<E: fmt::Display> fmt::Display for RenderError<E> {
@@ -20,6 +23,7 @@ impl<E: fmt::Display> fmt::Display for RenderError<E> {
         match self {
             Self::Tree(error) => error.fmt(formatter),
             Self::Backend(error) => error.fmt(formatter),
+            Self::Dialog(error) => error.fmt(formatter),
         }
     }
 }
