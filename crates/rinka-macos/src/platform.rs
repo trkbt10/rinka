@@ -8,15 +8,16 @@ use rinka_core::{
     AcceleratorOutcome, AcceleratorRouter, Align, ApplicationSpec, Axis, ButtonMaterial,
     ButtonRole, CanvasColor, CanvasPoint, CanvasRect, CanvasSize, CanvasVector, CollectionPattern,
     ContextMenu, ControlSize, DialogButtonRole, DialogDescription, DialogOutcome, DialogRequest,
-    DialogResponder, DialogService, DrawCommand, DrawScene, Element, ElementKind, EventBindings,
-    HighlightRole, HighlightSpan, HighlightSpans, ImageContent, ImageScaling, InputKind, Justify,
-    KeyChord, KeyIdentity, KeyRoutingContext, LineWidth, ListRowRole, MenuEntry, MenuItem,
-    Modifiers, MonospaceMetrics, MountedNode, NativeBackend, PanelBehavior, PatternRegion,
-    PointerButton, PointerEvent, PointerModifiers, PointerPhase, PrimaryModifier, PropertyPatch,
-    Props, Renderer, SortDirection, Spacing, StatusTone, Symbol, TableColumn, TableSort,
-    TextChange, TextContent, TextEdit, TextRange, TextRevision, TextRole, TextSelection,
-    TextSyncAction, ToolbarAction, ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem,
-    ToolbarItemKind, ToolbarPlacement, UiPattern, WindowId, WindowKind, WindowRuntime, WindowSpec,
+    DialogResponder, DialogService, DragPayload, DrawCommand, DrawScene, DropPosition, DropTarget,
+    Element, ElementKind, EventBindings, FileDrop, HighlightRole, HighlightSpan, HighlightSpans,
+    ImageContent, ImageScaling, InputKind, Justify, KeyChord, KeyIdentity, KeyRoutingContext,
+    LineWidth, ListRowRole, MenuEntry, MenuItem, Modifiers, MonospaceMetrics, MountedNode,
+    NativeBackend, PanelBehavior, PatternRegion, PayloadDrop, PointerButton, PointerEvent,
+    PointerModifiers, PointerPhase, PrimaryModifier, PropertyPatch, Props, Renderer, SortDirection,
+    Spacing, StatusTone, Symbol, TableColumn, TableSort, TextChange, TextContent, TextEdit,
+    TextRange, TextRevision, TextRole, TextSelection, TextSyncAction, ToolbarAction,
+    ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem, ToolbarItemKind, ToolbarPlacement, UiPattern,
+    WindowId, WindowKind, WindowRuntime, WindowSpec,
 };
 use std::cell::{Cell, RefCell};
 use std::error::Error;
@@ -35,6 +36,7 @@ include!("platform/text_editing.rs");
 include!("platform/canvas_surface.rs");
 include!("platform/key_dispatch.rs");
 include!("platform/pasteboard.rs");
+include!("platform/drag_drop.rs");
 include!("platform/collection_delegate.rs");
 include!("platform/backend.rs");
 include!("platform/collection_mount.rs");

@@ -225,6 +225,12 @@ impl NativeBackend for AppKitBackend {
         if let Some(menu) = element.context_menu_model() {
             install_element_context_menu(self.mtm, &handle, menu, &events);
         }
+        if matches!(
+            handle.element_kind(),
+            Some(ElementKind::Stack | ElementKind::Canvas)
+        ) {
+            set_view_drag_registration(handle.view(), element.drop_target_model().is_some());
+        }
         if handle.element_kind() == Some(ElementKind::List) {
             if self.split_restore_pending.get()
                 && let Some(delegate) = handle.0.table_delegate.borrow().as_ref()
@@ -562,6 +568,7 @@ fn create_element(
             align,
             justify,
         } => Ok(create_stack_handle(
+            mtm,
             HostKind::Element(ElementKind::Stack),
             StackLayout {
                 axis: *axis,
@@ -570,6 +577,7 @@ fn create_element(
                 align: *align,
                 justify: *justify,
             },
+            events,
             Vec::new(),
         )),
         Props::Scroll { axis } => {
@@ -603,6 +611,7 @@ fn create_element(
             *pattern,
             columns,
             events,
+            element.drop_target_model().cloned(),
         )),
         Props::ListRow {
             title,
@@ -627,6 +636,7 @@ fn create_element(
                 selected: *selected,
                 disclosure: *disclosure,
                 accessibility_label,
+                drop_target: element.drop_target_model().cloned(),
             },
         ),
         Props::Status {
@@ -724,6 +734,7 @@ fn create_native_list(
     pattern: CollectionPattern,
     columns: &[TableColumn],
     events: EventBindings,
+    drop_target: Option<DropTarget>,
 ) -> AppKitHandle {
     let scroll = new_view(objc2::class!(NSScrollView));
     let table = if matches!(
@@ -738,7 +749,7 @@ fn create_native_list(
     };
     let columns = effective_table_columns(pattern, columns);
 
-    let delegate = TableDelegate::new(mtm, pattern, columns.clone(), events);
+    let delegate = TableDelegate::new(mtm, pattern, columns.clone(), events, drop_target);
     // SAFETY: The delegate implements both required informal protocols and is
     // retained by AppKitHandle because NSTableView's delegate is non-owning.
     unsafe {
@@ -782,6 +793,8 @@ fn create_native_list(
     );
     configure_collection_pattern(scroll.as_object(), table.as_object(), pattern);
 
+    configure_table_drag_source(table.as_object());
+
     let handle = AppKitHandle::new_container(
         scroll,
         table,
@@ -790,5 +803,6 @@ fn create_native_list(
         Vec::new(),
     );
     *handle.0.table_delegate.borrow_mut() = Some(delegate);
+    refresh_table_drag_registration(&handle);
     handle
 }

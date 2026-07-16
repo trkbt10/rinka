@@ -168,6 +168,7 @@ fn apply_patch(
                 *delegate.ivars().pattern.borrow_mut() = *pattern;
                 *delegate.ivars().columns.borrow_mut() =
                     effective_table_columns(*pattern, columns);
+                *delegate.ivars().list_drop_target.borrow_mut() = patch.drop_target().cloned();
             }
             let columns = effective_table_columns(*pattern, columns);
             // SAFETY: A List handle's child host is its NSTableView.
@@ -209,6 +210,7 @@ fn apply_patch(
                 record.disclosure = *disclosure;
                 record.accessibility_label.clone_from(accessibility_label);
                 record.context_menu = patch.context_menu().cloned();
+                record.drop_target = patch.drop_target().cloned();
             }
             if let Some(list) = list_ancestor(handle) {
                 reload_native_list(&list)?;
@@ -263,6 +265,12 @@ fn apply_patch(
             patch.context_menu(),
             &events,
         );
+    }
+    if matches!(
+        handle.element_kind(),
+        Some(ElementKind::Stack | ElementKind::Canvas)
+    ) {
+        set_view_drag_registration(handle.view(), patch.drop_target().is_some());
     }
     refresh_ancestor_stacks(handle);
     Ok(())

@@ -10,6 +10,10 @@ struct TableRowRecord {
     accessibility_label: String,
     /// Declarative context menu realized on every cell this row produces.
     context_menu: Option<ContextMenu>,
+    /// Declarative drop-target model, kept beside the record so the table's
+    /// dragged-type registration follows the declared state exactly (the
+    /// stable binding is only current after the whole render settles).
+    drop_target: Option<DropTarget>,
     events: EventBindings,
     children: RefCell<Vec<Rc<RefCell<TableRowRecord>>>>,
     outline_identity: Id,
@@ -21,6 +25,9 @@ struct TableDelegateIvars {
     pattern: RefCell<CollectionPattern>,
     columns: RefCell<Vec<TableColumn>>,
     events: EventBindings,
+    /// The list element's own declarative drop-target model, mirrored here
+    /// for the same registration purpose as the per-row copy.
+    list_drop_target: RefCell<Option<DropTarget>>,
     suppress_selection: RefCell<bool>,
     suppress_expansion: RefCell<bool>,
     suppress_split_expansion: RefCell<bool>,
@@ -300,6 +307,145 @@ define_class!(
             }
         }
 
+        #[unsafe(method(tableView:pasteboardWriterForRow:))]
+        fn table_pasteboard_writer_for_row(
+            &self,
+            _table: &AnyObject,
+            row: isize,
+        ) -> *mut AnyObject {
+            let record = usize::try_from(row)
+                .ok()
+                .and_then(|index| self.ivars().rows.borrow().get(index).cloned());
+            let Some(record) = record else {
+                return std::ptr::null_mut();
+            };
+            row_pasteboard_writer(self.mtm(), &record)
+        }
+
+        #[unsafe(method(outlineView:pasteboardWriterForItem:))]
+        fn outline_pasteboard_writer_for_item(
+            &self,
+            _outline: &AnyObject,
+            item: *mut AnyObject,
+        ) -> *mut AnyObject {
+            let record = find_outline_record(&self.ivars().rows.borrow(), item);
+            let Some(record) = record else {
+                return std::ptr::null_mut();
+            };
+            row_pasteboard_writer(self.mtm(), &record)
+        }
+
+        #[unsafe(method(tableView:validateDrop:proposedRow:proposedDropOperation:))]
+        fn table_validate_drop(
+            &self,
+            table: &AnyObject,
+            info: *mut AnyObject,
+            row: isize,
+            operation: usize,
+        ) -> usize {
+            let proposed = (operation == TABLE_DROP_ON)
+                .then(|| {
+                    usize::try_from(row)
+                        .ok()
+                        .and_then(|index| self.ivars().rows.borrow().get(index).cloned())
+                })
+                .flatten();
+            let Some(resolved) = self.resolve_table_drop(table, info, proposed) else {
+                return DRAG_OPERATION_NONE;
+            };
+            // Retargeting realizes the native highlight on the actual
+            // recipient: the accepted row, or the whole list.
+            // SAFETY: setDropRow:dropOperation: is public NSTableView API.
+            unsafe {
+                match resolved.routed_record.and_then(|record| {
+                    table_delegate_row_index(table, &record)
+                        .and_then(|index| isize::try_from(index).ok())
+                }) {
+                    Some(index) => {
+                        let _: () =
+                            msg_send![table, setDropRow: index, dropOperation: TABLE_DROP_ON];
+                    }
+                    None => {
+                        let _: () =
+                            msg_send![table, setDropRow: -1_isize, dropOperation: TABLE_DROP_ON];
+                    }
+                }
+            }
+            resolved.operation
+        }
+
+        #[unsafe(method(tableView:acceptDrop:row:dropOperation:))]
+        fn table_accept_drop(
+            &self,
+            table: &AnyObject,
+            info: *mut AnyObject,
+            row: isize,
+            operation: usize,
+        ) -> bool {
+            let proposed = (operation == TABLE_DROP_ON)
+                .then(|| {
+                    usize::try_from(row)
+                        .ok()
+                        .and_then(|index| self.ivars().rows.borrow().get(index).cloned())
+                })
+                .flatten();
+            let Some(resolved) = self.resolve_table_drop(table, info, proposed) else {
+                return false.into();
+            };
+            // Every RefCell borrow is released: delivery may reconcile.
+            self.deliver_table_drop(table, info, &resolved.route)
+        }
+
+        #[unsafe(method(outlineView:validateDrop:proposedItem:proposedChildIndex:))]
+        fn outline_validate_drop(
+            &self,
+            outline: &AnyObject,
+            info: *mut AnyObject,
+            item: *mut AnyObject,
+            _index: isize,
+        ) -> usize {
+            let proposed = find_outline_record(&self.ivars().rows.borrow(), item);
+            let Some(resolved) = self.resolve_table_drop(outline, info, proposed) else {
+                return DRAG_OPERATION_NONE;
+            };
+            // SAFETY: setDropItem:dropChildIndex: is public NSOutlineView API;
+            // the routed item is the record's live outline identity.
+            unsafe {
+                match resolved.routed_record {
+                    Some(record) => {
+                        let identity = record.borrow().outline_identity.clone();
+                        let _: () = msg_send![outline,
+                            setDropItem: identity.as_object(),
+                            dropChildIndex: OUTLINE_DROP_ON_ITEM_INDEX
+                        ];
+                    }
+                    None => {
+                        let _: () = msg_send![outline,
+                            setDropItem: std::ptr::null::<AnyObject>(),
+                            dropChildIndex: OUTLINE_DROP_ON_ITEM_INDEX
+                        ];
+                    }
+                }
+            }
+            resolved.operation
+        }
+
+        #[unsafe(method(outlineView:acceptDrop:item:childIndex:))]
+        fn outline_accept_drop(
+            &self,
+            outline: &AnyObject,
+            info: *mut AnyObject,
+            item: *mut AnyObject,
+            _index: isize,
+        ) -> bool {
+            let proposed = find_outline_record(&self.ivars().rows.borrow(), item);
+            let Some(resolved) = self.resolve_table_drop(outline, info, proposed) else {
+                return false.into();
+            };
+            // Every RefCell borrow is released: delivery may reconcile.
+            self.deliver_table_drop(outline, info, &resolved.route)
+        }
+
         #[unsafe(method(clearSelectionSuppression))]
         fn clear_selection_suppression(&self) {
             *self.ivars().suppress_selection.borrow_mut() = false;
@@ -320,12 +466,14 @@ impl TableDelegate {
         pattern: CollectionPattern,
         columns: Vec<TableColumn>,
         events: EventBindings,
+        list_drop_target: Option<DropTarget>,
     ) -> Retained<Self> {
         let object = Self::alloc(mtm).set_ivars(TableDelegateIvars {
             rows: RefCell::new(Vec::new()),
             pattern: RefCell::new(pattern),
             columns: RefCell::new(columns),
             events,
+            list_drop_target: RefCell::new(list_drop_target),
             suppress_selection: RefCell::new(false),
             suppress_expansion: RefCell::new(false),
             suppress_split_expansion: RefCell::new(false),

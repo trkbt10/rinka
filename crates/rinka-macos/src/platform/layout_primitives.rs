@@ -166,11 +166,17 @@ fn configure_growth(view: &AnyObject, horizontal: bool, vertical: bool) {
 }
 
 fn create_stack_handle(
+    mtm: MainThreadMarker,
     host_kind: HostKind,
     layout: StackLayout,
+    events: EventBindings,
     auxiliaries: Vec<Id>,
 ) -> AppKitHandle {
-    let view = new_view(objc2::class!(NSView));
+    // The outer semantic view hosts NSDraggingDestination for the element;
+    // it serves drops only while a drop target is declared and registered.
+    let host = DropHostView::new(mtm, events);
+    // SAFETY: Retained keeps the fresh view alive across this borrow.
+    let view = unsafe { Id::from_borrowed(Retained::as_ptr(&host).cast::<AnyObject>().cast_mut()) };
     let child_host = new_view(objc2::class!(NSView));
     // SAFETY: The inner layout host is owned by the outer semantic container.
     unsafe {

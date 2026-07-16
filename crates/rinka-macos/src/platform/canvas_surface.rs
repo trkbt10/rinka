@@ -130,6 +130,27 @@ define_class!(
         fn scroll_wheel(&self, event: &AnyObject) {
             self.emit_pointer(event, PointerPhase::Scroll, PointerButton::None);
         }
+
+        #[unsafe(method(draggingEntered:))]
+        fn dragging_entered(&self, info: *mut AnyObject) -> usize {
+            drop_session_operation(&self.ivars().events, info)
+        }
+
+        #[unsafe(method(draggingUpdated:))]
+        fn dragging_updated(&self, info: *mut AnyObject) -> usize {
+            drop_session_operation(&self.ivars().events, info)
+        }
+
+        #[unsafe(method(prepareForDragOperation:))]
+        fn prepare_for_drag_operation(&self, info: *mut AnyObject) -> bool {
+            drop_session_operation(&self.ivars().events, info) != DRAG_OPERATION_NONE
+        }
+
+        #[unsafe(method(performDragOperation:))]
+        fn perform_drag_operation(&self, info: *mut AnyObject) -> bool {
+            let events = self.ivars().events.clone();
+            deliver_view_drop(self, &events, info)
+        }
     }
 );
 

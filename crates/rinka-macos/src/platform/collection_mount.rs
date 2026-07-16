@@ -211,6 +211,8 @@ fn reload_native_list(handle: &AppKitHandle) -> Result<(), AppKitError> {
             afterDelay: 0.0_f64
         ];
     }
+    // Row records may have gained or lost drop targets in this reload.
+    refresh_table_drag_registration(handle);
     Ok(())
 }
 

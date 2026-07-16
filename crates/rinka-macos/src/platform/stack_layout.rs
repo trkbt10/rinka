@@ -416,6 +416,7 @@ struct ListRowConfig<'a> {
     selected: bool,
     disclosure: bool,
     accessibility_label: &'a str,
+    drop_target: Option<DropTarget>,
 }
 
 fn create_list_row(
@@ -440,6 +441,7 @@ fn create_list_row(
         disclosure: config.disclosure,
         accessibility_label: config.accessibility_label.to_owned(),
         context_menu: None,
+        drop_target: config.drop_target,
         events,
         children: RefCell::new(Vec::new()),
         outline_identity: new_object(objc2::class!(NSObject)),
