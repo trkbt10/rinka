@@ -231,6 +231,18 @@ fn validate_content(window_id: &str, element: &Element) -> Result<(), WinUiDiagn
             element: ElementKind::TextArea,
         });
     }
+    if element.file_promise_model().is_some()
+        || element.drag_payload_model().is_some()
+        || element.drop_target_model().is_some()
+    {
+        // The WinUI realization (CanDrag/AllowDrop with DataPackage) does
+        // not exist yet; the typed rejection and its follow-up are recorded
+        // in reports/drag-and-drop.
+        return Err(WinUiDiagnostic::UnsupportedContentCapability {
+            window_id: window_id.to_owned(),
+            capability: "drag and drop",
+        });
+    }
     for child in element.children() {
         validate_content(window_id, child)?;
     }
@@ -429,6 +441,36 @@ mod tests {
             Err(WinUiDiagnostic::UnsupportedContentCapability {
                 window_id: "main".to_owned(),
                 capability: "context menu",
+            })
+        );
+    }
+
+    #[test]
+    fn drag_and_drop_declarations_are_a_typed_diagnostic() {
+        let mut with_drop_target = window("main", WindowKind::Main);
+        with_drop_target.content =
+            WindowContent::from(column([label("drop zone")]).on_file_drop(|_| {}));
+        assert_eq!(
+            validate_application(&application(vec![with_drop_target])),
+            Err(WinUiDiagnostic::UnsupportedContentCapability {
+                window_id: "main".to_owned(),
+                capability: "drag and drop",
+            })
+        );
+
+        let mut with_drag_source = window("main", WindowKind::Main);
+        with_drag_source.content = WindowContent::from(rinka_core::list(
+            "Files",
+            [
+                rinka_core::list_row("readme", None, None, false, false, "readme", || {})
+                    .drag_payload(rinka_core::DragPayload::new("demo.file", "readme")),
+            ],
+        ));
+        assert_eq!(
+            validate_application(&application(vec![with_drag_source])),
+            Err(WinUiDiagnostic::UnsupportedContentCapability {
+                window_id: "main".to_owned(),
+                capability: "drag and drop",
             })
         );
     }

@@ -87,6 +87,17 @@ fn validate_element(element: &Element) -> Result<(), GtkError> {
             "GTK adapter does not realize element context menus yet".to_owned(),
         ));
     }
+    if element.file_promise_model().is_some()
+        || element.drag_payload_model().is_some()
+        || element.drop_target_model().is_some()
+    {
+        // The GTK realization (DropTarget/DragSource event controllers) does
+        // not exist yet; the typed rejection and its follow-up are recorded
+        // in reports/drag-and-drop.
+        return Err(GtkError(
+            "GTK adapter does not realize drag-and-drop declarations yet".to_owned(),
+        ));
+    }
     if let Some(name) = element.props().accessibility_name() {
         require_text("accessibility name", name)?;
     }
