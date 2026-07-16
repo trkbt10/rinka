@@ -13,6 +13,16 @@ publish = false
 rinka = { path = "../../crates/rinka" }
 rinka-headless = { path = "../../crates/rinka-headless" }
 
+[dev-dependencies]
+rinka-test = { path = "../../crates/rinka-test" }
+
+# The live harness gate owns the process main thread (AppKit requires it),
+# so it runs without the libtest harness; headless or non-macOS runs log a
+# typed skip reason and exit successfully.
+[[test]]
+name = "appkit_harness"
+harness = false
+
 [target.'cfg(target_os = "macos")'.dependencies]
 rinka-macos = { path = "../../crates/rinka-macos" }
 

@@ -5,14 +5,14 @@ use rinka::{
     Accelerator, Alert, Align, ApplicationSpec, Axis, ButtonRole, CanvasColor, CanvasPoint,
     CanvasRect, CanvasSize, ClipboardError, CollectionPattern, Component, ControlSize,
     DialogButtonRole, DialogOutcome, Dispatch, DragPayload, DrawScene, Element, FileDrop,
-    FilePromise, ImageContent, ImageScaling, ImeEvent, Justify, KeyChord, KeyEvent, KeyIdentity,
-    LineWidth, MenuBar, MenuBarEntry, MenuBarMenu, MenuBarMenuRole, MenuEntry, MenuItem,
-    OpenPanelDescription, PanelBehavior, PointerEvent, PointerPhase, PreeditCaret,
+    FilePromise, ImageContent, ImageScaling, ImeEvent, InputKind, Justify, KeyChord, KeyEvent,
+    KeyIdentity, LineWidth, MenuBar, MenuBarEntry, MenuBarMenu, MenuBarMenuRole, MenuEntry,
+    MenuItem, OpenPanelDescription, PanelBehavior, PointerEvent, PointerPhase, PreeditCaret,
     SavePanelDescription, Size, SortDirection, Spacing, StandardItem, StatusTone, Submenu, Symbol,
     TableColumn, TableSort, TextChange, TextRole, TextSelection, ToolbarAction, ToolbarChoice,
     ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem, ToolbarPlacement, UiPattern, UpdateContext,
-    WindowContent, WindowId, WindowKind, WindowSpec, button, canvas, column, image, label, list,
-    list_row, mount_pattern, progress, row, separator, spacer, status, text_area, toggle,
+    WindowContent, WindowId, WindowKind, WindowSpec, button, canvas, column, image, input, label,
+    list, list_row, mount_pattern, progress, row, separator, spacer, status, text_area, toggle,
 };
 use std::path::PathBuf;
 
@@ -154,6 +154,7 @@ struct ExplorerComponent {
     clipboard_note: Option<String>,
     drag_note: Option<String>,
     show_hidden: bool,
+    file_filter: String,
     favorites_expanded: bool,
     locations_expanded: bool,
     src_expanded: bool,
@@ -193,6 +194,7 @@ impl ExplorerComponent {
             clipboard_note: None,
             drag_note: None,
             show_hidden: false,
+            file_filter: String::new(),
             favorites_expanded: true,
             locations_expanded: true,
             src_expanded: false,
@@ -311,6 +313,7 @@ enum ExplorerMessage {
     SelectFile(FileKey),
     SetScene(Scene),
     SetShowHidden(bool),
+    SetFileFilter(String),
     NewFolder,
     ShowHelp,
     SetSort(TableSort),
@@ -367,6 +370,17 @@ impl Component for ExplorerComponent {
             ExplorerMessage::SetShowHidden(value) => {
                 self.show_hidden = value;
                 if !value && self.selected_file == Some(FileKey::HiddenEnvironment) {
+                    self.selected_file = None;
+                }
+            }
+            ExplorerMessage::SetFileFilter(filter) => {
+                self.file_filter = filter;
+                // The inspector requires the selected file to stay visible;
+                // a selection the filter hides is released, exactly like the
+                // hidden-files toggle above.
+                if let Some(selected) = self.selected_file
+                    && file_record_for_key(self, selected).is_none()
+                {
                     self.selected_file = None;
                 }
             }
@@ -1079,6 +1093,7 @@ fn location_row(
 fn directory_content(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) -> Element {
     let copy_dispatch = dispatch.clone();
     let paste_dispatch = dispatch.clone();
+    let filter_dispatch = dispatch.clone();
     let mut status_children = vec![
         label(scene_summary(model))
             .text_role(TextRole::Secondary)
@@ -1128,6 +1143,16 @@ fn directory_content(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessa
             .align(Align::Center)
             .spacing(Spacing::Related)
             .with_key("directory-path-row"),
+            // A live listing filter: the mounted native search field the
+            // consumer test harness types into and reads back.
+            input(
+                model.file_filter.clone(),
+                "Filter",
+                InputKind::Search,
+                "Filter files",
+                move |value| filter_dispatch.emit(ExplorerMessage::SetFileFilter(value)),
+            )
+            .with_key("filter-files"),
         ])
         .spacing(Spacing::Compact)
         .padding(Spacing::Content)
@@ -1867,6 +1892,13 @@ fn file_records(model: &ExplorerComponent) -> Vec<FileRecord> {
         });
     }
     records.retain(|record| !model.deleted.contains(&record.key));
+    if !model.file_filter.is_empty() {
+        // Case-insensitive title filter on the top-level listing; a
+        // matching folder keeps its children, mirroring what the rendered
+        // rows (and therefore `file_record_for_key`) consider visible.
+        let needle = model.file_filter.to_lowercase();
+        records.retain(|record| record.title.to_lowercase().contains(&needle));
+    }
     records.sort_by(|left, right| {
         let order = match model.sort.column_id.as_str() {
             "modified" => left.modified.cmp(right.modified),
