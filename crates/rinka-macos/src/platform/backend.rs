@@ -300,6 +300,21 @@ impl NativeBackend for AppKitBackend {
                     .is_some_and(|inner| !Rc::ptr_eq(&inner, &handle.0))
             });
         }
+        if handle.element_kind() == Some(ElementKind::TextArea)
+            && let Some(delegate) = handle.0.text_delegate.borrow_mut().take()
+        {
+            // SAFETY: Balances the bounds observation and any queued delayed
+            // drain registered while the text area was mounted; both must not
+            // outlive the delegate.
+            unsafe {
+                let center: *mut AnyObject =
+                    msg_send![objc2::class!(NSNotificationCenter), defaultCenter];
+                let _: () = msg_send![center, removeObserver: &*delegate];
+                let _: () = msg_send![objc2::class!(NSObject),
+                    cancelPreviousPerformRequestsWithTarget: &*delegate
+                ];
+            }
+        }
         Ok(())
     }
 }

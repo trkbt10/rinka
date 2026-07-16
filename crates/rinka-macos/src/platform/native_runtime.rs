@@ -31,6 +31,8 @@ unsafe extern "C" {
     static SPLIT_VIEW_WILL_RESIZE_NOTIFICATION: *mut AnyObject;
     #[link_name = "NSSplitViewDidResizeSubviewsNotification"]
     static SPLIT_VIEW_DID_RESIZE_NOTIFICATION: *mut AnyObject;
+    #[link_name = "NSViewBoundsDidChangeNotification"]
+    static VIEW_BOUNDS_DID_CHANGE_NOTIFICATION: *mut AnyObject;
 }
 
 /// `NSSplitViewItemCollapseBehaviorPreferResizingSiblingsWithFixedSplitView`.

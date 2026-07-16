@@ -135,6 +135,36 @@ fn spans_to_utf16_ranges(
     ranges
 }
 
+/// Converts the ordered document spans intersecting one visible window into
+/// UTF-16 ranges, clamped to the window, costing one pass over the window's
+/// text plus a binary search over the span set.
+fn spans_to_utf16_ranges_in_window(
+    window_text: &str,
+    window_chars: TextRange,
+    window_utf16_start: usize,
+    spans: &[HighlightSpan],
+) -> Vec<(NSRange, HighlightRole)> {
+    let first = spans.partition_point(|span| span.range.end <= window_chars.start);
+    let rebased: Vec<HighlightSpan> = spans[first..]
+        .iter()
+        .take_while(|span| span.range.start < window_chars.end)
+        .map(|span| {
+            HighlightSpan::new(
+                TextRange::new(
+                    span.range.start.max(window_chars.start) - window_chars.start,
+                    span.range.end.min(window_chars.end) - window_chars.start,
+                ),
+                span.role,
+            )
+        })
+        .collect();
+    let mut converted = spans_to_utf16_ranges(window_text, &rebased);
+    for (range, _) in &mut converted {
+        range.location += window_utf16_start;
+    }
+    converted
+}
+
 /// Returns the native palette color realizing one semantic highlight role.
 ///
 /// System colors follow the effective light or dark appearance; the mapping
@@ -185,6 +215,9 @@ struct TextAreaDelegateIvars {
     deferred: RefCell<Option<DeferredTextArea>>,
     /// Last applied highlight-span revision; [`None`] forces re-application.
     spans_revision: Cell<Option<u64>>,
+    /// The declared span set, applied lazily over the visible range so a
+    /// document-wide highlight never costs more than the viewport.
+    declared_spans: RefCell<Vec<HighlightSpan>>,
     role: Cell<TextRole>,
 }
 
@@ -227,6 +260,13 @@ define_class!(
             }
             self.record_native_edit(storage, edited_range, change_in_length);
             self.schedule_drain();
+        }
+
+        /// Scroll and resize reveal buffer regions whose highlight has not
+        /// been materialized yet; re-apply the declared spans there.
+        #[unsafe(method(viewBoundsDidChange:))]
+        fn view_bounds_did_change(&self, _notification: &AnyObject) {
+            self.apply_visible_spans();
         }
 
         #[unsafe(method(textViewDidChangeSelection:))]
@@ -292,6 +332,7 @@ impl TextAreaDelegate {
             text_view: RefCell::new(None),
             deferred: RefCell::new(None),
             spans_revision: Cell::new(None),
+            declared_spans: RefCell::new(Vec::new()),
             role: Cell::new(role),
         });
         // SAFETY: NSObject's init signature and ownership convention are stable.
@@ -416,6 +457,71 @@ impl TextAreaDelegate {
         apply_text_area_spans(self, view.as_object(), &deferred.spans);
         apply_text_area_selection(self, view.as_object(), deferred.selection);
     }
+
+    /// Materializes the declared spans as foreground-color temporary
+    /// attributes over the currently visible character range.
+    ///
+    /// Application is viewport-scoped so a document-wide span set costs the
+    /// viewport, not the document, per update; scrolling re-applies the
+    /// newly revealed range through the bounds-change notification. While an
+    /// IME composition is active nothing is touched: in TextKit 1 the input
+    /// method renders its preedit underline through the same
+    /// temporary-attribute channel.
+    fn apply_visible_spans(&self) {
+        if self.has_marked_text() {
+            return;
+        }
+        let Some(view) = self.text_view() else {
+            return;
+        };
+        let mirror = self.ivars().mirror.borrow();
+        let spans = self.ivars().declared_spans.borrow();
+        // SAFETY: Layout, container, and temporary-attribute calls address
+        // the live text view's TextKit 1 objects on the main thread.
+        unsafe {
+            let layout: *mut AnyObject = msg_send![view.as_object(), layoutManager];
+            let container: *mut AnyObject = msg_send![view.as_object(), textContainer];
+            if layout.is_null() || container.is_null() {
+                return;
+            }
+            let visible: Rect = msg_send![view.as_object(), visibleRect];
+            let glyph_range: NSRange = msg_send![layout,
+                glyphRangeForBoundingRect: visible,
+                inTextContainer: container
+            ];
+            let window_utf16: NSRange = msg_send![layout,
+                characterRangeForGlyphRange: glyph_range,
+                actualGlyphRange: std::ptr::null_mut::<NSRange>()
+            ];
+            let Some(window) = locate_utf16_range(
+                &mirror,
+                window_utf16.location,
+                window_utf16.location + window_utf16.length,
+            ) else {
+                return;
+            };
+            let attribute = Id::from_borrowed(FOREGROUND_COLOR_ATTRIBUTE_NAME);
+            let _: () = msg_send![layout,
+                removeTemporaryAttribute: attribute.as_object(),
+                forCharacterRange: window_utf16
+            ];
+            let window_text = &mirror[window.byte_range.clone()];
+            let converted = spans_to_utf16_ranges_in_window(
+                window_text,
+                window.char_range,
+                window_utf16.location,
+                &spans,
+            );
+            for (range, role) in &converted {
+                let color = highlight_color(*role);
+                let _: () = msg_send![layout,
+                    addTemporaryAttribute: attribute.as_object(),
+                    value: color.as_object(),
+                    forCharacterRange: *range
+                ];
+            }
+        }
+    }
 }
 
 /// Declarative text-area state routed to creation and reconciliation.
@@ -509,10 +615,22 @@ fn create_text_area(
     *delegate.ivars().text_view.borrow_mut() = Some(text_view.clone());
     // SAFETY: NSTextView and NSTextStorage delegates are non-owning; the
     // delegate is retained by the AppKitHandle for the view's lifetime.
+    // The bounds observation is balanced by removeObserver in the backend's
+    // destroy for this element.
     unsafe {
         let _: () = msg_send![text_view.as_object(), setDelegate: &*delegate];
         let storage: *mut AnyObject = msg_send![text_view.as_object(), textStorage];
         let _: () = msg_send![storage, setDelegate: &*delegate];
+        let clip: *mut AnyObject = msg_send![scroll.as_object(), contentView];
+        let _: () = msg_send![clip, setPostsBoundsChangedNotifications: true];
+        let center: *mut AnyObject =
+            msg_send![objc2::class!(NSNotificationCenter), defaultCenter];
+        let _: () = msg_send![center,
+            addObserver: &*delegate,
+            selector: sel!(viewBoundsDidChange:),
+            name: VIEW_BOUNDS_DID_CHANGE_NOTIFICATION,
+            object: clip
+        ];
     }
     apply_text_area_spans(&delegate, text_view.as_object(), spans);
     apply_text_area_selection(&delegate, text_view.as_object(), selection);
@@ -688,54 +806,29 @@ fn apply_text_area_content(
     }
 }
 
-/// Applies highlight spans as foreground-color temporary attributes.
+/// Adopts a changed span set and materializes it over the visible range.
+///
+/// The stored set stays authoritative for regions revealed later by
+/// scrolling; an unchanged revision is a no-op.
 fn apply_text_area_spans(
     delegate: &TextAreaDelegate,
-    text_view: &AnyObject,
+    _text_view: &AnyObject,
     spans: &HighlightSpans,
 ) {
     if delegate.ivars().spans_revision.get() == Some(spans.revision()) {
         return;
     }
     let started = std::time::Instant::now();
-    let converted = {
-        let mirror = delegate.ivars().mirror.borrow();
-        spans_to_utf16_ranges(&mirror, spans.spans())
-    };
-    let buffer_utf16: usize = {
-        let mirror = delegate.ivars().mirror.borrow();
-        mirror.encode_utf16().count()
-    };
-    // SAFETY: The layout manager belongs to the live text view; temporary
-    // attributes take UTF-16 character ranges inside the current document.
-    unsafe {
-        let layout: *mut AnyObject = msg_send![text_view, layoutManager];
-        if layout.is_null() {
-            return;
-        }
-        let attribute = Id::from_borrowed(FOREGROUND_COLOR_ATTRIBUTE_NAME);
-        let full = NSRange {
-            location: 0,
-            length: buffer_utf16,
-        };
-        let _: () = msg_send![layout,
-            removeTemporaryAttribute: attribute.as_object(),
-            forCharacterRange: full
-        ];
-        for (range, role) in &converted {
-            let color = highlight_color(*role);
-            let _: () = msg_send![layout,
-                addTemporaryAttribute: attribute.as_object(),
-                value: color.as_object(),
-                forCharacterRange: *range
-            ];
-        }
-    }
+    delegate
+        .ivars()
+        .declared_spans
+        .replace(spans.spans().to_vec());
     delegate.ivars().spans_revision.set(Some(spans.revision()));
+    delegate.apply_visible_spans();
     if std::env::var_os("RINKA_APPKIT_TEXTAREA_PROBE").is_some() {
         eprintln!(
-            "Rinka textarea spans applied count={} micros={}",
-            converted.len(),
+            "Rinka textarea spans adopted count={} micros={}",
+            spans.spans().len(),
             started.elapsed().as_micros()
         );
     }
@@ -809,6 +902,38 @@ mod text_conversion_tests {
         let range = locate_char_range(text, TextRange::new(2, 4)).expect("😀b");
         assert_eq!((range.location, range.length), (2, 3));
         assert!(locate_char_range(text, TextRange::new(4, 5)).is_none());
+    }
+
+    #[test]
+    fn window_conversion_clamps_and_rebases_spans_to_the_viewport() {
+        // Document: "abcあdefghij" — window covers chars 3..8 ("あdefg"),
+        // which starts at UTF-16 offset 3 as well (all ASCII before it).
+        let text = "abcあdefghij";
+        let window_chars = TextRange::new(3, 8);
+        let window_text = "あdefg";
+        let spans = [
+            HighlightSpan::new(TextRange::new(0, 2), HighlightRole::Comment), // before
+            HighlightSpan::new(TextRange::new(2, 5), HighlightRole::Keyword), // straddles start
+            HighlightSpan::new(TextRange::new(6, 10), HighlightRole::String), // straddles end
+            HighlightSpan::new(TextRange::new(10, 11), HighlightRole::Number), // after
+        ];
+        assert_eq!(text.chars().count(), 11);
+
+        let converted = spans_to_utf16_ranges_in_window(window_text, window_chars, 3, &spans);
+
+        assert_eq!(converted.len(), 2);
+        // Keyword clamped to chars 3..5 → utf16 3..5 (あ is one utf16 unit).
+        assert_eq!(
+            (converted[0].0.location, converted[0].0.length),
+            (3, 2)
+        );
+        assert_eq!(converted[0].1, HighlightRole::Keyword);
+        // String clamped to chars 6..8 → utf16 6..8.
+        assert_eq!(
+            (converted[1].0.location, converted[1].0.length),
+            (6, 2)
+        );
+        assert_eq!(converted[1].1, HighlightRole::String);
     }
 
     #[test]
