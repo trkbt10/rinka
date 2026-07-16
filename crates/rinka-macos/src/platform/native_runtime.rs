@@ -703,6 +703,89 @@ fn create_ns_menu_item(
     }
 }
 
+/// Returns the label class whose contextual interactions honor the nearest
+/// retained context menu.
+///
+/// Stock NSTextField consumes right-clicks without consulting its ancestors,
+/// so a click landing on a row title or a labelled element would silently
+/// drop the context menu. The subclass resolves `menuForEvent:` by walking
+/// from itself through its ancestor views to the first retained menu — the
+/// same contract the responder chain provides for other view classes — and
+/// pops that menu on right-click. rinka-macos binds AppKit dynamically, so
+/// the subclass is registered once through the Objective-C runtime.
+fn context_menu_label_class() -> &'static objc2::runtime::AnyClass {
+    static CLASS: std::sync::OnceLock<&'static objc2::runtime::AnyClass> =
+        std::sync::OnceLock::new();
+    CLASS.get_or_init(|| {
+        let mut builder = objc2::runtime::ClassBuilder::new(
+            c"RinkaContextMenuLabel",
+            objc2::class!(NSTextField),
+        )
+        .expect("the context-menu label class registers once per process");
+        // SAFETY: Both implementations match the public NSResponder/NSView
+        // selector signatures (one NSEvent argument; menuForEvent: returns
+        // NSMenu*, rightMouseDown: returns void).
+        unsafe {
+            builder.add_method(
+                sel!(menuForEvent:),
+                label_menu_for_event as extern "C-unwind" fn(_, _, _) -> _,
+            );
+            builder.add_method(
+                sel!(rightMouseDown:),
+                label_right_mouse_down as extern "C-unwind" fn(_, _, _),
+            );
+        }
+        builder.register()
+    })
+}
+
+extern "C-unwind" fn label_menu_for_event(
+    label: &AnyObject,
+    _command: objc2::runtime::Sel,
+    event: &AnyObject,
+) -> *mut AnyObject {
+    // SAFETY: AppKit delivers the event to a live view on the main thread;
+    // the walk reads only retained superviews.
+    unsafe {
+        let mut view: *mut AnyObject = label as *const AnyObject as *mut AnyObject;
+        while let Some(current) = NonNull::new(view) {
+            let menu: *mut AnyObject = msg_send![current.as_ref(), menu];
+            if !menu.is_null() {
+                return menu;
+            }
+            view = msg_send![current.as_ref(), superview];
+        }
+        msg_send![super(label, objc2::class!(NSTextField)), menuForEvent: event]
+    }
+}
+
+extern "C-unwind" fn label_right_mouse_down(
+    label: &AnyObject,
+    _command: objc2::runtime::Sel,
+    event: &AnyObject,
+) {
+    // SAFETY: AppKit delivers the event to a live view on the main thread.
+    // Popping the resolved menu runs the same native contextual-click
+    // presentation AppKit uses for view classes that do not consume
+    // right-clicks.
+    unsafe {
+        let menu: *mut AnyObject = msg_send![label, menuForEvent: event];
+        if let Some(menu) = NonNull::new(menu) {
+            let _: () = msg_send![
+                objc2::class!(NSMenu),
+                popUpContextMenu: menu.as_ref(),
+                withEvent: event,
+                forView: label
+            ];
+        } else {
+            let _: () = msg_send![
+                super(label, objc2::class!(NSTextField)),
+                rightMouseDown: event
+            ];
+        }
+    }
+}
+
 /// Builds the native menu realizing one element's context-menu model.
 ///
 /// Every item targets the element's stable event binding with its own item

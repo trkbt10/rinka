@@ -468,7 +468,7 @@ fn create_table_cell(
         attach_record_context_menu(mtm, record, cell);
         return cell;
     }
-    let cell = new_view(objc2::class!(NSTableCellView));
+    let cell = new_view(context_menu_cell_class());
     let title = label_view(&record.title, TextRole::Body);
     let subtitle = record
         .subtitle
@@ -673,6 +673,59 @@ fn create_table_cell(
     autorelease_id(cell)
 }
 
+/// Returns the table-cell class that also serves the accessibility
+/// show-menu action.
+///
+/// Stock NSTableCellView does not implement `accessibilityPerformShowMenu`,
+/// so an assistive client could not open a row's context menu without a
+/// pointer. The subclass pops the cell's retained menu exactly like AppKit's
+/// own contextual-click handling. rinka-macos binds AppKit dynamically, so
+/// the subclass is registered once through the Objective-C runtime instead of
+/// a static class declaration.
+fn context_menu_cell_class() -> &'static objc2::runtime::AnyClass {
+    static CLASS: std::sync::OnceLock<&'static objc2::runtime::AnyClass> =
+        std::sync::OnceLock::new();
+    CLASS.get_or_init(|| {
+        let mut builder = objc2::runtime::ClassBuilder::new(
+            c"RinkaContextMenuTableCellView",
+            objc2::class!(NSTableCellView),
+        )
+        .expect("the context-menu cell class registers once per process");
+        // SAFETY: The implementation matches the selector's public signature
+        // (no arguments, BOOL return) declared by the NSAccessibility
+        // protocol that NSView adopts.
+        unsafe {
+            builder.add_method(
+                sel!(accessibilityPerformShowMenu),
+                cell_accessibility_perform_show_menu as extern "C-unwind" fn(_, _) -> _,
+            );
+        }
+        builder.register()
+    })
+}
+
+extern "C-unwind" fn cell_accessibility_perform_show_menu(
+    cell: &AnyObject,
+    _command: objc2::runtime::Sel,
+) -> objc2::runtime::Bool {
+    // SAFETY: AppKit delivers accessibility actions to a live view on the
+    // main thread. Popping the retained menu runs the same native tracking
+    // loop as AppKit's contextual-click handling, anchored at the cell.
+    unsafe {
+        let menu: *mut AnyObject = msg_send![cell, menu];
+        let Some(menu) = NonNull::new(menu) else {
+            return objc2::runtime::Bool::NO;
+        };
+        let bounds: Rect = msg_send![cell, bounds];
+        let _: bool = msg_send![menu.as_ref(),
+            popUpMenuPositioningItem: std::ptr::null::<AnyObject>(),
+            atLocation: bounds.origin,
+            inView: cell
+        ];
+        objc2::runtime::Bool::YES
+    }
+}
+
 /// Realizes a row's context menu on one freshly built table cell.
 ///
 /// Cells are rebuilt whenever the row reloads, so a menu state change on the
@@ -691,13 +744,16 @@ fn attach_record_context_menu(
     };
     let native = build_context_ns_menu(mtm, menu, &record.events);
     // SAFETY: The cell is a live NSTableCellView and retains its menu.
+    // Descendant views reach it through NSView's responder-chain bubbling,
+    // and the menu-aware label class resolves it for text fields, which do
+    // not bubble contextual clicks on their own.
     unsafe {
         let _: () = msg_send![cell.as_ref(), setMenu: native.as_object()];
     }
 }
 
 fn create_table_value_cell(value: &str) -> *mut AnyObject {
-    let cell = new_view(objc2::class!(NSTableCellView));
+    let cell = new_view(context_menu_cell_class());
     let text = label_view(value, TextRole::Body);
     // SAFETY: NSTableCellView lays out its standard text outlet according to
     // the table's effective row-size style.

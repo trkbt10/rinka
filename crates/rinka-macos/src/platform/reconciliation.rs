@@ -1,9 +1,10 @@
 fn label_view(text: &str, role: TextRole) -> Id {
     let value = ns_string(text);
-    // SAFETY: AppKit returns a live autoreleased label.
+    // SAFETY: AppKit returns a live autoreleased label; the convenience
+    // constructor instantiates the receiver class, here the menu-aware label.
     unsafe {
         let pointer: *mut AnyObject =
-            msg_send![objc2::class!(NSTextField), labelWithString: value.as_object()];
+            msg_send![context_menu_label_class(), labelWithString: value.as_object()];
         let view = Id::from_borrowed(pointer);
         configure_label(view.as_object(), role, false);
         view

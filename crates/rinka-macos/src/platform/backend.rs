@@ -313,10 +313,11 @@ fn create_element(
             selectable,
         } => {
             let value = ns_string(text);
-            // SAFETY: AppKit is called on the main thread and returns a live label.
+            // SAFETY: AppKit is called on the main thread and returns a live
+            // label; the menu-aware label class serves contextual clicks.
             let view = unsafe {
                 let pointer: *mut AnyObject =
-                    msg_send![objc2::class!(NSTextField), labelWithString: value.as_object()];
+                    msg_send![context_menu_label_class(), labelWithString: value.as_object()];
                 let view = Id::from_borrowed(pointer);
                 configure_label(view.as_object(), *role, *selectable);
                 view

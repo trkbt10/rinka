@@ -324,6 +324,7 @@ define_class!(
             self.begin_transition_probe();
             self.begin_scene_probe();
             self.begin_accelerator_probe();
+            self.begin_context_menu_probe();
         }
 
         #[unsafe(method(runTransitionProbe:))]
