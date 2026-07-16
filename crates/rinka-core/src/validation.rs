@@ -126,6 +126,14 @@ pub enum TreeError {
         /// Human-readable invariant violation.
         reason: String,
     },
+    /// A window declaration (title or lifecycle subscription) violated a
+    /// structural invariant.
+    InvalidWindowDeclaration {
+        /// Element path used for diagnostics.
+        path: String,
+        /// Human-readable invariant violation.
+        reason: String,
+    },
 }
 
 impl fmt::Display for TreeError {
@@ -187,6 +195,9 @@ impl fmt::Display for TreeError {
             Self::InvalidDock { path, reason } => {
                 write!(formatter, "invalid dock at {path}: {reason}")
             }
+            Self::InvalidWindowDeclaration { path, reason } => {
+                write!(formatter, "invalid window declaration at {path}: {reason}")
+            }
         }
     }
 }
@@ -196,7 +207,41 @@ impl Error for TreeError {}
 pub(crate) fn validate_tree(root: &Element) -> Result<(), TreeError> {
     validate_accelerator_table(root)?;
     validate_menu_bar(root)?;
+    validate_window_declaration(root)?;
     validate_node(root, "root")
+}
+
+fn validate_window_declaration(root: &Element) -> Result<(), TreeError> {
+    if root
+        .window_title_model()
+        .is_some_and(|title| title.is_empty())
+    {
+        return Err(TreeError::InvalidWindowDeclaration {
+            path: "root".to_owned(),
+            reason: "the declared window title must not be empty".to_owned(),
+        });
+    }
+    validate_window_declaration_placement(root.children(), "root")
+}
+
+fn validate_window_declaration_placement(
+    children: &[Element],
+    path: &str,
+) -> Result<(), TreeError> {
+    for (index, child) in children.iter().enumerate() {
+        let name = child
+            .key()
+            .map_or_else(|| index.to_string(), |key| key.as_str().to_owned());
+        let child_path = format!("{path}/{name}");
+        if child.window.is_declared() {
+            return Err(TreeError::InvalidWindowDeclaration {
+                path: child_path,
+                reason: "window declarations must be made on the window content root".to_owned(),
+            });
+        }
+        validate_window_declaration_placement(child.children(), &child_path)?;
+    }
+    Ok(())
 }
 
 fn validate_menu_bar(root: &Element) -> Result<(), TreeError> {

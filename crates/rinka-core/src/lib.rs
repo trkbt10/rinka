@@ -26,6 +26,7 @@ mod text_input;
 mod toolbar;
 mod validation;
 mod window;
+mod window_service;
 
 pub use accelerator::{
     Accelerator, AcceleratorBindings, AcceleratorDescription, AcceleratorOutcome,
@@ -87,6 +88,10 @@ pub use toolbar::{
 };
 pub use validation::TreeError;
 pub use window::{
-    ApplicationSpec, PanelBehavior, RenderContext, Size, WindowContent, WindowId, WindowKind,
-    WindowSpec,
+    ApplicationSpec, LastWindowClosedPolicy, PanelBehavior, RenderContext, Size, WindowContent,
+    WindowId, WindowKind, WindowSpec,
+};
+pub use window_service::{
+    CloseRequestHandler, RecordingWindowService, WindowBindings, WindowError, WindowEvent,
+    WindowEventHandler, WindowPosition, WindowService, WindowServiceCall, Windows,
 };

@@ -6,14 +6,14 @@ use rinka::{
     CanvasRect, CanvasSize, ClipboardError, CollectionPattern, Component, ControlSize,
     DialogButtonRole, DialogOutcome, Dispatch, DockEdge, DockEvent, DockGroup, DockLayout, DockTab,
     DragPayload, DrawScene, Element, FileDrop, FilePromise, ImageContent, ImageScaling, ImeEvent,
-    InputKind, Justify, KeyChord, KeyEvent, KeyIdentity, LineWidth, MenuBar, MenuBarEntry,
-    MenuBarMenu, MenuBarMenuRole, MenuEntry, MenuItem, OpenPanelDescription, PanelBehavior,
-    PointerEvent, PointerPhase, PreeditCaret, SavePanelDescription, Size, SortDirection, Spacing,
-    StandardItem, StatusTone, Submenu, Symbol, TableColumn, TableSort, TextChange, TextRole,
-    TextSelection, ToolbarAction, ToolbarChoice, ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem,
-    ToolbarPlacement, UiPattern, UpdateContext, WindowContent, WindowId, WindowKind, WindowSpec,
-    button, canvas, column, dock, image, input, label, list, list_row, mount_pattern, progress,
-    row, separator, spacer, status, text_area, toggle,
+    InputKind, Justify, KeyChord, KeyEvent, KeyIdentity, LastWindowClosedPolicy, LineWidth,
+    MenuBar, MenuBarEntry, MenuBarMenu, MenuBarMenuRole, MenuEntry, MenuItem, OpenPanelDescription,
+    PanelBehavior, PointerEvent, PointerPhase, PreeditCaret, SavePanelDescription, Size,
+    SortDirection, Spacing, StandardItem, StatusTone, Submenu, Symbol, TableColumn, TableSort,
+    TextChange, TextRole, TextSelection, ToolbarAction, ToolbarChoice, ToolbarDisplay,
+    ToolbarGroupDisplay, ToolbarItem, ToolbarPlacement, UiPattern, UpdateContext, WindowContent,
+    WindowId, WindowKind, WindowSpec, button, canvas, column, dock, image, input, label, list,
+    list_row, mount_pattern, progress, row, separator, spacer, status, text_area, toggle,
 };
 use std::path::PathBuf;
 
@@ -879,6 +879,11 @@ pub fn application(scene: Scene) -> ApplicationSpec {
         // whenever a menu-less window (the activity panel) is focused.
         menu_bar: MenuBar::default(),
         windows,
+        // The explorer keeps its historical behavior: closing the last
+        // window exits, which is also what the probe suite's native-close
+        // finish paths rely on. Declared explicitly rather than through the
+        // macOS platform default (which keeps the application running).
+        last_window_closed: LastWindowClosedPolicy::Exit,
     }
 }
 

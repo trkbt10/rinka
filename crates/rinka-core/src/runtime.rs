@@ -1,6 +1,7 @@
 //! Component state and queued message delivery.
 
-use crate::dialog::{DialogErrorReport, Dialogs};
+use crate::dialog::{DialogError, DialogErrorReport, Dialogs};
+use crate::window_service::{WindowError, WindowErrorReport, Windows};
 use crate::{
     Clipboard, Element, ElementKind, NativeBackend, PlatformServices, RenderContext, RenderError,
     Renderer, TreeError, WindowContent,
@@ -9,6 +10,31 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::fmt;
 use std::rc::{Rc, Weak};
+
+/// One typed service failure raised from an update.
+///
+/// The runtimes record it as the corresponding [`RenderError`] variant, so a
+/// dialog that cannot be presented and a window operation that cannot be
+/// performed travel the same channel reconciliation errors use.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ServiceError {
+    /// A dialog request could not be presented.
+    Dialog(DialogError),
+    /// A window request could not be performed.
+    Window(WindowError),
+}
+
+impl ServiceError {
+    pub(crate) fn into_render_error<E>(self) -> RenderError<E> {
+        match self {
+            Self::Dialog(error) => RenderError::Dialog(error),
+            Self::Window(error) => RenderError::Window(error),
+        }
+    }
+}
+
+/// Sink recording a service request the runtime could not perform.
+pub(crate) type ServiceErrorReport = Rc<dyn Fn(ServiceError)>;
 
 /// Stateful declarative application unit.
 pub trait Component {
@@ -34,13 +60,14 @@ pub struct UpdateContext<M> {
     dispatch: Dispatch<M>,
     services: Rc<PlatformServices>,
     report_dialog_error: DialogErrorReport,
+    report_window_error: WindowErrorReport,
 }
 
 impl<M: 'static> UpdateContext<M> {
     /// Creates a context over a recording dispatch and fake services.
     ///
     /// Runtimes build one per message through [`Self::for_runtime`]; tests
-    /// build their own with this constructor. A dialog error raised without
+    /// build their own with this constructor. A service error raised without
     /// a runtime is discarded, matching the runtime-less snapshot path.
     pub fn new(dispatch: Dispatch<M>, services: PlatformServices) -> Self {
         Self::for_runtime(dispatch, Rc::new(services), Rc::new(|_| {}))
@@ -49,12 +76,19 @@ impl<M: 'static> UpdateContext<M> {
     pub(crate) fn for_runtime(
         dispatch: Dispatch<M>,
         services: Rc<PlatformServices>,
-        report_dialog_error: DialogErrorReport,
+        report: ServiceErrorReport,
     ) -> Self {
+        let report_dialog_error = {
+            let report = report.clone();
+            Rc::new(move |error: DialogError| report(ServiceError::Dialog(error)))
+        };
+        let report_window_error =
+            Rc::new(move |error: WindowError| report(ServiceError::Window(error)));
         Self {
             dispatch,
             services,
             report_dialog_error,
+            report_window_error,
         }
     }
 
@@ -80,6 +114,11 @@ impl<M: 'static> UpdateContext<M> {
             &self.dispatch,
             &self.report_dialog_error,
         )
+    }
+
+    /// Runtime window lifecycle through the host's injected service.
+    pub fn windows(&self) -> Windows<'_> {
+        Windows::new(self.services.window_service(), &self.report_window_error)
     }
 }
 
@@ -186,9 +225,9 @@ impl<B: NativeBackend + 'static, C: Component + 'static> AppRuntime<B, C> {
         UpdateContext::for_runtime(
             Self::dispatch(Rc::downgrade(inner)),
             inner.services.clone(),
-            Rc::new(move |error| {
+            Rc::new(move |error: ServiceError| {
                 if let Some(inner) = error_slot.upgrade() {
-                    *inner.last_error.borrow_mut() = Some(RenderError::Dialog(error));
+                    *inner.last_error.borrow_mut() = Some(error.into_render_error());
                 }
             }),
         )
@@ -320,10 +359,11 @@ impl<B: NativeBackend + 'static> WindowRuntime<B> {
             let context = Self::context(inner);
             let next = inner.content.render(context);
             let result = Self::reconcile(inner, next);
-            // Dialog presentation failures recorded by the drained updates
+            // Service failures recorded by the drained updates — dialogs
+            // that cannot present, window requests that cannot perform —
             // become the same typed error channel reconciliation uses.
-            if let Some(error) = inner.content.take_dialog_error() {
-                *inner.last_error.borrow_mut() = Some(RenderError::Dialog(error));
+            if let Some(error) = inner.content.take_service_error() {
+                *inner.last_error.borrow_mut() = Some(error.into_render_error());
             }
             match result {
                 Ok(()) => {

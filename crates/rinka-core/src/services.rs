@@ -2,6 +2,7 @@
 
 use crate::clipboard::Clipboard;
 use crate::dialog::DialogService;
+use crate::window_service::WindowService;
 use std::fmt;
 use std::rc::Rc;
 
@@ -13,12 +14,14 @@ use std::rc::Rc;
 /// [`crate::UpdateContext`]. A capability the host does not provide is
 /// registered as its typed-diagnostic implementation (for the clipboard,
 /// [`Clipboard::unsupported`]) or left absent (for dialogs, surfacing as a
-/// typed [`crate::DialogError::NoPresenter`]) — never a silent no-op — so
-/// update logic observes an honest error instead of fake success.
+/// typed [`crate::DialogError::NoPresenter`]; for windows, as a typed
+/// [`crate::WindowError::NoHost`]) — never a silent no-op — so update logic
+/// observes an honest error instead of fake success.
 #[derive(Clone)]
 pub struct PlatformServices {
     clipboard: Clipboard,
     dialogs: Option<Rc<dyn DialogService>>,
+    windows: Option<Rc<dyn WindowService>>,
 }
 
 impl PlatformServices {
@@ -27,12 +30,19 @@ impl PlatformServices {
         Self {
             clipboard,
             dialogs: None,
+            windows: None,
         }
     }
 
     /// Injects the host's window-modal dialog presenter.
     pub fn with_dialog_service(mut self, service: impl DialogService + 'static) -> Self {
         self.dialogs = Some(Rc::new(service));
+        self
+    }
+
+    /// Injects the host's runtime window lifecycle service.
+    pub fn with_window_service(mut self, service: impl WindowService + 'static) -> Self {
+        self.windows = Some(Rc::new(service));
         self
     }
 
@@ -44,6 +54,10 @@ impl PlatformServices {
     pub(crate) fn dialog_service(&self) -> Option<&Rc<dyn DialogService>> {
         self.dialogs.as_ref()
     }
+
+    pub(crate) fn window_service(&self) -> Option<&Rc<dyn WindowService>> {
+        self.windows.as_ref()
+    }
 }
 
 impl Default for PlatformServices {
@@ -53,6 +67,7 @@ impl Default for PlatformServices {
         Self {
             clipboard: Clipboard::unsupported("no platform service host"),
             dialogs: None,
+            windows: None,
         }
     }
 }
@@ -63,6 +78,7 @@ impl fmt::Debug for PlatformServices {
             .debug_struct("PlatformServices")
             .field("clipboard", &self.clipboard)
             .field("dialogs", &self.dialogs.is_some())
+            .field("windows", &self.windows.is_some())
             .finish()
     }
 }

@@ -516,6 +516,7 @@ mod tests {
                 name: "Empty".to_owned(),
                 menu_bar: rinka_core::MenuBar::default(),
                 windows: Vec::new(),
+                last_window_closed: rinka_core::LastWindowClosedPolicy::PlatformDefault,
             }),
             1
         );

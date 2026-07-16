@@ -9,6 +9,7 @@ use crate::event::{
 use crate::menu::{ContextMenu, MenuEntry};
 use crate::menu_bar::MenuBar;
 use crate::semantics::*;
+use crate::window_service::{WindowDeclaration, WindowEvent};
 use crate::{ActivateHandler, ToggleHandler};
 use std::fmt;
 use std::rc::Rc;
@@ -50,6 +51,7 @@ pub struct Element {
     pub(crate) handlers: EventHandlers,
     pub(crate) accelerators: Vec<Accelerator>,
     pub(crate) menu_bar: Option<MenuBar>,
+    pub(crate) window: WindowDeclaration,
 }
 
 impl Element {
@@ -61,6 +63,7 @@ impl Element {
             handlers: EventHandlers::default(),
             accelerators: Vec::new(),
             menu_bar: None,
+            window: WindowDeclaration::default(),
         }
     }
 
@@ -72,6 +75,7 @@ impl Element {
             handlers: EventHandlers::default(),
             accelerators: Vec::new(),
             menu_bar: None,
+            window: WindowDeclaration::default(),
         }
     }
 
@@ -602,6 +606,63 @@ impl Element {
         self.menu_bar.as_ref()
     }
 
+    /// Declares the window's title on its content root.
+    ///
+    /// The title is reconciled like every other declared property: while
+    /// the window is open, re-rendering with a different title retitles the
+    /// native window in place, superseding the launch title from
+    /// [`crate::WindowSpec`]. Validation rejects a title declared below the
+    /// root. Size and position deliberately have no declared counterpart —
+    /// the user owns them through native gestures, so they are one-shot
+    /// requests on [`crate::Windows`] instead of reconciled properties.
+    pub fn window_title(mut self, title: impl Into<String>) -> Self {
+        self.window.title = Some(title.into());
+        self
+    }
+
+    /// Returns the declared window title.
+    pub fn window_title_model(&self) -> Option<&str> {
+        self.window.title.as_deref()
+    }
+
+    /// Subscribes the window's component to per-window lifecycle events on
+    /// the content root.
+    ///
+    /// The handler is a message-dispatching closure exactly like a button
+    /// handler, replaced on every render while the host's native connection
+    /// stays stable. Close requests are deliberately not delivered here;
+    /// declare [`Element::on_close_request`] to intercept closing.
+    /// Validation rejects a subscription declared below the root.
+    pub fn on_window_event(mut self, handler: impl Fn(WindowEvent) + 'static) -> Self {
+        self.window.event = Some(Rc::new(handler));
+        self
+    }
+
+    /// Returns whether a lifecycle-event subscription is declared.
+    pub fn declares_window_events(&self) -> bool {
+        self.window.event.is_some()
+    }
+
+    /// Makes user-gesture closes of this window interceptable.
+    ///
+    /// While declared, the native close button and its key equivalent no
+    /// longer close the window directly: the host defers the close, retains
+    /// a pending-close token, and delivers the request through this handler
+    /// as a component message. The component must answer with
+    /// [`crate::Windows::confirm_close`] or [`crate::Windows::veto_close`].
+    /// The declaration is reconciled: rendering without it restores fully
+    /// native closing. Validation rejects a handler declared below the
+    /// root.
+    pub fn on_close_request(mut self, handler: impl Fn() + 'static) -> Self {
+        self.window.close_request = Some(Rc::new(handler));
+        self
+    }
+
+    /// Returns whether a close-request handler is declared.
+    pub fn declares_close_request(&self) -> bool {
+        self.window.close_request.is_some()
+    }
+
     pub(crate) fn take_children(&mut self) -> Vec<Self> {
         std::mem::take(&mut self.children)
     }
@@ -612,6 +673,10 @@ impl Element {
 
     pub(crate) fn take_menu_bar(&mut self) -> Option<MenuBar> {
         self.menu_bar.take()
+    }
+
+    pub(crate) fn take_window_declaration(&mut self) -> WindowDeclaration {
+        std::mem::take(&mut self.window)
     }
 }
 
@@ -625,6 +690,7 @@ impl fmt::Debug for Element {
             .field("handlers", &self.handlers)
             .field("accelerators", &self.accelerators)
             .field("menu_bar", &self.menu_bar.is_some())
+            .field("window", &self.window)
             .finish()
     }
 }

@@ -4,6 +4,7 @@ use crate::accelerator::AcceleratorBindings;
 use crate::dialog::DialogError;
 use crate::menu_bar::MenuBarBindings;
 use crate::validation::{TreeError, validate_tree};
+use crate::window_service::{WindowBindings, WindowError};
 use crate::{Element, EventBindings, NativeBackend, PropertyPatch};
 use std::error::Error;
 use std::fmt;
@@ -17,6 +18,8 @@ pub enum RenderError<E> {
     Backend(E),
     /// An update requested a dialog that cannot be presented.
     Dialog(DialogError),
+    /// An update requested a window operation that cannot be performed.
+    Window(WindowError),
 }
 
 impl<E: fmt::Display> fmt::Display for RenderError<E> {
@@ -25,6 +28,7 @@ impl<E: fmt::Display> fmt::Display for RenderError<E> {
             Self::Tree(error) => error.fmt(formatter),
             Self::Backend(error) => error.fmt(formatter),
             Self::Dialog(error) => error.fmt(formatter),
+            Self::Window(error) => error.fmt(formatter),
         }
     }
 }
@@ -86,6 +90,7 @@ pub struct Renderer<B: NativeBackend> {
     mounted: Option<MountedNode<B::Handle>>,
     accelerators: AcceleratorBindings,
     menu_bar: MenuBarBindings,
+    window: WindowBindings,
     last_stats: RenderStats,
 }
 
@@ -97,6 +102,7 @@ impl<B: NativeBackend> Renderer<B> {
             mounted: None,
             accelerators: AcceleratorBindings::default(),
             menu_bar: MenuBarBindings::default(),
+            window: WindowBindings::default(),
             last_stats: RenderStats::default(),
         }
     }
@@ -107,6 +113,7 @@ impl<B: NativeBackend> Renderer<B> {
         validate_backend(&self.backend, &next).map_err(RenderError::Backend)?;
         let accelerators = next.take_accelerators();
         let menu_bar = next.take_menu_bar();
+        let window = next.take_window_declaration();
 
         let root = self.backend.root();
         let mut stats = RenderStats::default();
@@ -125,6 +132,7 @@ impl<B: NativeBackend> Renderer<B> {
         self.mounted = Some(mounted);
         self.accelerators.replace(&accelerators);
         self.menu_bar.replace(menu_bar);
+        self.window.replace(window);
         self.last_stats = stats;
         Ok(stats)
     }
@@ -143,6 +151,15 @@ impl<B: NativeBackend> Renderer<B> {
     /// every successful render replaces the declared model in place.
     pub fn menu_bar_bindings(&self) -> &MenuBarBindings {
         &self.menu_bar
+    }
+
+    /// Returns the stable window declaration slot owned by this renderer.
+    ///
+    /// A platform host reads the declared title and dispatches window
+    /// lifecycle events through this value; every successful render replaces
+    /// the declaration in place.
+    pub fn window_bindings(&self) -> &WindowBindings {
+        &self.window
     }
 
     /// Returns the adapter.

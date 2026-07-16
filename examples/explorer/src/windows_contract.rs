@@ -93,5 +93,7 @@ pub fn application() -> ApplicationSpec {
             .with_key("contract-workspace")
             .into(),
         }],
+        // The contract probe's process lifetime is its single window.
+        last_window_closed: rinka::LastWindowClosedPolicy::PlatformDefault,
     }
 }

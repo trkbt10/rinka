@@ -1,7 +1,6 @@
 //! Window, toolbar, and panel descriptions.
 
-use crate::dialog::DialogError;
-use crate::runtime::{UpdateContext, WeakDispatch};
+use crate::runtime::{ServiceError, UpdateContext, WeakDispatch};
 use crate::services::PlatformServices;
 use crate::{Component, Dispatch, Element, MenuBar, ToolbarDisplay, ToolbarItem};
 use std::cell::{Cell, RefCell};
@@ -96,7 +95,7 @@ impl fmt::Debug for RenderContext {
 pub struct WindowContent {
     render: Rc<dyn Fn(RenderContext) -> Element>,
     services: Rc<RefCell<Rc<PlatformServices>>>,
-    dialog_error: Rc<RefCell<Option<DialogError>>>,
+    service_error: Rc<RefCell<Option<ServiceError>>>,
 }
 
 impl WindowContent {
@@ -105,7 +104,7 @@ impl WindowContent {
         Self {
             render: Rc::new(render),
             services: Rc::new(RefCell::new(Rc::new(PlatformServices::default()))),
-            dialog_error: Rc::new(RefCell::new(None)),
+            service_error: Rc::new(RefCell::new(None)),
         }
     }
 
@@ -124,14 +123,14 @@ impl WindowContent {
         let component = Rc::new(RefCell::new(component));
         let content = Self::reactive(|_| unreachable!("replaced below"));
         let services = content.services.clone();
-        let dialog_error = content.dialog_error.clone();
+        let service_error = content.service_error.clone();
         let messages: Rc<RefCell<VecDeque<C::Message>>> = Rc::new(RefCell::new(VecDeque::new()));
         let draining = Rc::new(Cell::new(false));
         let render = move |context: RenderContext| {
             let target = component.clone();
             let render_context = context.clone();
             let services = services.clone();
-            let dialog_error = dialog_error.clone();
+            let service_error = service_error.clone();
             let messages = messages.clone();
             let draining = draining.clone();
             // A dialog outcome re-enters this same dispatch loop later; the
@@ -155,7 +154,7 @@ impl WindowContent {
                         .as_ref()
                         .and_then(WeakDispatch::upgrade)
                         .expect("the dispatch loop outlives its own invocation");
-                    let error_slot = dialog_error.clone();
+                    let error_slot = service_error.clone();
                     let update_context = UpdateContext::for_runtime(
                         redispatch,
                         services.borrow().clone(),
@@ -174,7 +173,7 @@ impl WindowContent {
         Self {
             render: Rc::new(render),
             services: content.services,
-            dialog_error: content.dialog_error,
+            service_error: content.service_error,
         }
     }
 
@@ -192,9 +191,9 @@ impl WindowContent {
         *self.services.borrow_mut() = Rc::new(services);
     }
 
-    /// Takes the most recent dialog presentation failure.
-    pub(crate) fn take_dialog_error(&self) -> Option<DialogError> {
-        self.dialog_error.borrow_mut().take()
+    /// Takes the most recent service failure raised by a drained update.
+    pub(crate) fn take_service_error(&self) -> Option<ServiceError> {
+        self.service_error.borrow_mut().take()
     }
 }
 
@@ -231,6 +230,27 @@ pub struct WindowSpec {
     pub content: WindowContent,
 }
 
+/// Application behavior when its last open window closes.
+///
+/// Each platform host maps the declaration onto its native lifecycle:
+/// macOS answers `applicationShouldTerminateAfterLastWindowClosed:` from it,
+/// hosts whose process lifetime is bound to their single window (GTK, WinUI)
+/// treat [`Self::Exit`] and [`Self::PlatformDefault`] identically and reject
+/// [`Self::StayRunning`] with a typed diagnostic until they can host an
+/// empty window set.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum LastWindowClosedPolicy {
+    /// The platform's own convention: macOS keeps the application running
+    /// (the AppKit default), GTK and WinUI exit with their window.
+    #[default]
+    PlatformDefault,
+    /// The application exits when its last window closes.
+    Exit,
+    /// The application keeps running with no open windows, where the
+    /// platform can represent that state.
+    StayRunning,
+}
+
 /// Application identity and initial window set.
 #[derive(Clone, Debug)]
 pub struct ApplicationSpec {
@@ -248,5 +268,11 @@ pub struct ApplicationSpec {
     /// declares no application-level menus.
     pub menu_bar: MenuBar,
     /// Initial windows and panels.
+    ///
+    /// This is the launch set only; the runtime window set changes through
+    /// [`crate::Windows`], reached from a component update via
+    /// [`crate::UpdateContext::windows`].
     pub windows: Vec<WindowSpec>,
+    /// Behavior when the last open window closes.
+    pub last_window_closed: LastWindowClosedPolicy,
 }

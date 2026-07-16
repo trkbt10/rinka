@@ -4,7 +4,9 @@
 //! its retained mounted tree into native WinUI controls. Windows App SDK
 //! runtime staging belongs to the executable package that calls [`run`].
 
-use rinka_core::{ApplicationSpec, Element, ElementKind, PanelBehavior, WindowKind};
+use rinka_core::{
+    ApplicationSpec, Element, ElementKind, LastWindowClosedPolicy, PanelBehavior, WindowKind,
+};
 use std::error::Error;
 use std::fmt;
 
@@ -85,6 +87,24 @@ pub enum WinUiDiagnostic {
         /// the declaring window's stable identity.
         scope: String,
     },
+    /// A window declared runtime window-lifecycle surface (a reconciled
+    /// title, a lifecycle-event subscription, or a close-request handler)
+    /// this host does not deliver yet.
+    ///
+    /// The AppWindow `Closing`/`Changed` integration is tracked in
+    /// `reports/dynamic-window-management`; rejecting the declaration keeps
+    /// the contract honest instead of silently never firing the handlers.
+    UnsupportedWindowLifecycle {
+        /// Stable window identity.
+        window_id: String,
+    },
+    /// The application declared a last-window-closed policy this host cannot
+    /// represent: the WinUI process lifetime is bound to its single main
+    /// window, so it cannot keep running with no windows.
+    UnsupportedLastWindowPolicy {
+        /// Rejected policy declaration.
+        policy: LastWindowClosedPolicy,
+    },
     /// Window content declared a semantic capability this host does not
     /// realize yet.
     UnsupportedContentCapability {
@@ -134,6 +154,14 @@ impl fmt::Display for WinUiDiagnostic {
             Self::UnsupportedMenuBar { scope } => write!(
                 formatter,
                 "'{scope}' declares a menu bar the WinUI host does not realize yet"
+            ),
+            Self::UnsupportedWindowLifecycle { window_id } => write!(
+                formatter,
+                "window '{window_id}' declares runtime window-lifecycle surface the WinUI host does not deliver yet"
+            ),
+            Self::UnsupportedLastWindowPolicy { policy } => write!(
+                formatter,
+                "the WinUI host cannot represent the {policy:?} last-window-closed policy"
             ),
             Self::UnsupportedContentCapability {
                 window_id,
@@ -185,6 +213,11 @@ fn validate_application(application: &ApplicationSpec) -> Result<(), WinUiDiagno
             scope: "application".to_owned(),
         });
     }
+    if application.last_window_closed == LastWindowClosedPolicy::StayRunning {
+        return Err(WinUiDiagnostic::UnsupportedLastWindowPolicy {
+            policy: application.last_window_closed,
+        });
+    }
     let mut main_windows = 0_usize;
     for window in &application.windows {
         match window.kind {
@@ -206,6 +239,14 @@ fn validate_application(application: &ApplicationSpec) -> Result<(), WinUiDiagno
         if snapshot.menu_bar_model().is_some() {
             return Err(WinUiDiagnostic::UnsupportedMenuBar {
                 scope: window.id.as_str().to_owned(),
+            });
+        }
+        if snapshot.window_title_model().is_some()
+            || snapshot.declares_window_events()
+            || snapshot.declares_close_request()
+        {
+            return Err(WinUiDiagnostic::UnsupportedWindowLifecycle {
+                window_id: window.id.as_str().to_owned(),
             });
         }
         validate_content(window.id.as_str(), &snapshot)?;
@@ -342,6 +383,7 @@ mod tests {
             name: "Test".to_owned(),
             menu_bar: rinka_core::MenuBar::default(),
             windows,
+            last_window_closed: rinka_core::LastWindowClosedPolicy::PlatformDefault,
         }
     }
 
@@ -549,6 +591,51 @@ mod tests {
                 scope: "main".to_owned(),
             })
         );
+    }
+
+    #[test]
+    fn window_lifecycle_declarations_are_a_typed_diagnostic() {
+        let mut with_title = window("main", WindowKind::Main);
+        with_title.content = WindowContent::from(
+            column([label("main").with_key("title")])
+                .with_key("root")
+                .window_title("Session 2"),
+        );
+        assert_eq!(
+            validate_application(&application(vec![with_title])),
+            Err(WinUiDiagnostic::UnsupportedWindowLifecycle {
+                window_id: "main".to_owned(),
+            })
+        );
+
+        let mut with_close_request = window("main", WindowKind::Main);
+        with_close_request.content = WindowContent::from(
+            column([label("main").with_key("title")])
+                .with_key("root")
+                .on_close_request(|| {}),
+        );
+        assert_eq!(
+            validate_application(&application(vec![with_close_request])),
+            Err(WinUiDiagnostic::UnsupportedWindowLifecycle {
+                window_id: "main".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn the_stay_running_last_window_policy_is_a_typed_diagnostic() {
+        let mut stays = application(vec![window("main", WindowKind::Main)]);
+        stays.last_window_closed = rinka_core::LastWindowClosedPolicy::StayRunning;
+        assert_eq!(
+            validate_application(&stays),
+            Err(WinUiDiagnostic::UnsupportedLastWindowPolicy {
+                policy: rinka_core::LastWindowClosedPolicy::StayRunning,
+            })
+        );
+
+        let mut exits = application(vec![window("main", WindowKind::Main)]);
+        exits.last_window_closed = rinka_core::LastWindowClosedPolicy::Exit;
+        assert_eq!(validate_application(&exits), Ok(()));
     }
 
     #[test]
