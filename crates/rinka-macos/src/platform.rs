@@ -31,6 +31,7 @@ use std::rc::{Rc, Weak};
 
 mod application;
 pub use application::run;
+pub use application::{AppKitTestHost, SettleObservation, window_server_session_available};
 
 include!("platform/native_runtime.rs");
 include!("platform/text_editing.rs");

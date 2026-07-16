@@ -12,3 +12,4 @@ include!("application/window_host.rs");
 include!("application/dialog_host.rs");
 include!("application/dialog_probe.rs");
 include!("application/run.rs");
+include!("application/testing.rs");
