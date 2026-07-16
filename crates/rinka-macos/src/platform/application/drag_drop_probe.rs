@@ -59,11 +59,21 @@ impl ApplicationDelegate {
         // main thread through their public selectors.
         let passed = unsafe {
             let dumped = dump_probe_ax_tree(content.as_ref());
+            let files_table =
+                find_probe_outline(content.as_ref(), &|label| label.starts_with("Files in"));
             if std::env::var_os("RINKA_EXPLORER_DISABLE_DRAG").is_some() {
                 // The drag-free run exists only to produce the AX dump for
                 // the equivalence comparison.
                 eprintln!("Rinka drag-drop probe step=ax-dump-without-drag pass={dumped}");
                 dumped
+            } else if files_table.is_none() {
+                // No file table means the Empty scene: the enclosing column
+                // is the container drop host that keeps the status copy's
+                // "drop files here" promise.
+                let drop_in = probe_empty_scene_drop_in(self.ivars(), content.as_ref());
+                flush_window_rendering(self.ivars());
+                self.capture_windows_to_directory("drag-empty-");
+                drop_in
             } else {
                 let drop_in = probe_file_drop_in(self.ivars(), content.as_ref());
                 flush_window_rendering(self.ivars());
@@ -364,6 +374,98 @@ unsafe fn probe_file_drop_in(ivars: &ApplicationDelegateIvars, content: &AnyObje
             written && operation == DRAG_OPERATION_COPY && accepted && note_pass;
         eprintln!(
             "Rinka drag-drop probe step=drop-in written={written} operation={operation} accepted={accepted} note={note:?} pass={passed}"
+        );
+        passed
+    }
+}
+
+/// Finds the deepest view registered for dragged file URLs that is not a
+/// table — the container drop host serving NSDraggingDestination.
+unsafe fn find_registered_drop_host(view: &AnyObject) -> Option<Id> {
+    // SAFETY: The receiver is a live NSView on the main thread.
+    unsafe {
+        let subviews: *mut AnyObject = msg_send![view, subviews];
+        let count: usize = msg_send![subviews, count];
+        for index in 0..count {
+            let child: *mut AnyObject = msg_send![subviews, objectAtIndex: index];
+            if let Some(child) = NonNull::new(child)
+                && let Some(found) = find_registered_drop_host(child.as_ref())
+            {
+                return Some(found);
+            }
+        }
+        let is_table: bool = msg_send![view, isKindOfClass: objc2::class!(NSTableView)];
+        if is_table {
+            return None;
+        }
+        let registered: *mut AnyObject = msg_send![view, registeredDraggedTypes];
+        let registered_count: usize = if registered.is_null() {
+            0
+        } else {
+            msg_send![registered, count]
+        };
+        if registered_count > 0 {
+            return Some(Id::from_borrowed((view as *const AnyObject).cast_mut()));
+        }
+    }
+    None
+}
+
+/// Layer 1 on the Empty scene: the "drop files here" column serves
+/// NSDraggingDestination directly through its own protocol methods.
+unsafe fn probe_empty_scene_drop_in(
+    ivars: &ApplicationDelegateIvars,
+    content: &AnyObject,
+) -> bool {
+    // SAFETY: Every receiver is a live retained AppKit object on the main
+    // thread; the dropped URL points at a file this probe created.
+    unsafe {
+        let Some(host) = find_registered_drop_host(content) else {
+            eprintln!("Rinka drag-drop probe step=empty-drop-in error=host-missing pass=false");
+            return false;
+        };
+        let mtm = MainThreadMarker::new().expect("probe runs on the main thread");
+
+        let directory = std::env::temp_dir().join(format!(
+            "rinka-drag-drop-probe-empty-{}",
+            std::process::id()
+        ));
+        if std::fs::create_dir_all(&directory).is_err() {
+            eprintln!("Rinka drag-drop probe step=empty-drop-in error=temp-dir pass=false");
+            return false;
+        }
+        let file = directory.join("gamma.txt");
+        if std::fs::write(&file, "gamma").is_err() {
+            eprintln!("Rinka drag-drop probe step=empty-drop-in error=temp-file pass=false");
+            return false;
+        }
+
+        let pasteboard = probe_pasteboard("empty-files");
+        let url: *mut AnyObject = msg_send![
+            objc2::class!(NSURL),
+            fileURLWithPath: ns_string(&file.display().to_string()).as_object()
+        ];
+        let url_array = ns_array(&[Id::from_borrowed(url)]);
+        let written: bool =
+            msg_send![pasteboard.as_object(), writeObjects: url_array.as_object()];
+
+        let location = probe_view_center_in_window(host.as_object());
+        let info = DragInfoDouble::new(mtm, pasteboard.clone(), location);
+        let operation: usize = msg_send![host.as_object(), draggingEntered: &*info];
+        let prepared: bool = msg_send![host.as_object(), prepareForDragOperation: &*info];
+        let performed: bool = msg_send![host.as_object(), performDragOperation: &*info];
+        release_probe_pasteboard(&pasteboard);
+        let _ = std::fs::remove_dir_all(&directory);
+
+        let note = probe_drag_note(ivars, "Dropped 1 file(s)").unwrap_or_default();
+        let note_pass = note.contains("gamma.txt");
+        let passed = written
+            && operation == DRAG_OPERATION_COPY
+            && prepared
+            && performed
+            && note_pass;
+        eprintln!(
+            "Rinka drag-drop probe step=empty-drop-in written={written} operation={operation} prepared={prepared} performed={performed} note={note:?} pass={passed}"
         );
         passed
     }

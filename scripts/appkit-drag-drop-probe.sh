@@ -38,6 +38,11 @@ RINKA_APPKIT_DRAG_DROP_PROBE_AX_DUMP="$out/ax-with-drag.txt" \
 RINKA_APPKIT_WINDOW_CAPTURE_DIR="$out" \
   "$executable" --scene ready 2>&1 | tee "$out/probe-with-drag.log"
 
+echo "== drag-drop probe (Empty scene keeps the drop-files-here promise) =="
+RINKA_APPKIT_DRAG_DROP_PROBE=1 \
+RINKA_APPKIT_WINDOW_CAPTURE_DIR="$out" \
+  "$executable" --scene empty 2>&1 | tee "$out/probe-empty-scene.log"
+
 echo "== accessibility dump (drag declarations stripped) =="
 RINKA_APPKIT_DRAG_DROP_PROBE=1 \
 RINKA_EXPLORER_DISABLE_DRAG=1 \
@@ -45,6 +50,7 @@ RINKA_APPKIT_DRAG_DROP_PROBE_AX_DUMP="$out/ax-without-drag.txt" \
   "$executable" --scene ready 2>&1 | tee "$out/probe-without-drag.log"
 
 grep -q "Rinka drag-drop probe result=PASS" "$out/probe-with-drag.log"
+grep -q "Rinka drag-drop probe result=PASS" "$out/probe-empty-scene.log"
 grep -q "Rinka drag-drop probe result=PASS" "$out/probe-without-drag.log"
 
 if diff -u "$out/ax-without-drag.txt" "$out/ax-with-drag.txt" >"$out/ax-diff.txt"; then
