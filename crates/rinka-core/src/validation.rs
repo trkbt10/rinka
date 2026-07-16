@@ -67,6 +67,14 @@ pub enum TreeError {
         /// Human-readable invariant violation.
         reason: String,
     },
+    /// A text area declared spans, edits, or a selection its document cannot
+    /// satisfy.
+    InvalidTextArea {
+        /// Element path.
+        path: String,
+        /// Human-readable invariant violation.
+        reason: String,
+    },
     /// A mounted native window attempted to replace its promoted root class.
     WindowRootKindChanged {
         /// Root kind retained by the native window.
@@ -122,6 +130,9 @@ impl fmt::Display for TreeError {
             }
             Self::InvalidMenu { path, reason } => {
                 write!(formatter, "invalid context menu at {path}: {reason}")
+            }
+            Self::InvalidTextArea { path, reason } => {
+                write!(formatter, "invalid text area at {path}: {reason}")
             }
             Self::WindowRootKindChanged { previous, next } => write!(
                 formatter,
@@ -220,6 +231,7 @@ fn validate_node(element: &Element, path: &str) -> Result<(), TreeError> {
         crate::ElementKind::Label
         | crate::ElementKind::Button
         | crate::ElementKind::Input
+        | crate::ElementKind::TextArea
         | crate::ElementKind::Toggle
         | crate::ElementKind::Progress
         | crate::ElementKind::Image
@@ -254,6 +266,10 @@ fn validate_node(element: &Element, path: &str) -> Result<(), TreeError> {
         });
     }
 
+    if element.kind() == crate::ElementKind::TextArea {
+        validate_text_area(element, path)?;
+    }
+
     if element.kind() == crate::ElementKind::List {
         for (index, child) in children.iter().enumerate() {
             if child.kind() != crate::ElementKind::ListRow {
@@ -279,6 +295,63 @@ fn validate_node(element: &Element, path: &str) -> Result<(), TreeError> {
             .key()
             .map_or_else(|| index.to_string(), |key| key.as_str().to_owned());
         validate_node(child, &format!("{path}/{name}"))?;
+    }
+    Ok(())
+}
+
+fn validate_text_area(element: &Element, path: &str) -> Result<(), TreeError> {
+    let crate::Props::TextArea {
+        content,
+        spans,
+        selection,
+        ..
+    } = element.props()
+    else {
+        return Ok(());
+    };
+    let error = |reason: String| TreeError::InvalidTextArea {
+        path: path.to_owned(),
+        reason,
+    };
+    let length = content.char_len();
+    for edit in content.edits() {
+        if edit.range.end < edit.range.start {
+            return Err(error(format!(
+                "edit range {}..{} is inverted",
+                edit.range.start, edit.range.end
+            )));
+        }
+    }
+    let mut previous_end = 0_usize;
+    for span in spans.spans() {
+        if span.range.end <= span.range.start {
+            return Err(error(format!(
+                "highlight span {}..{} is empty or inverted",
+                span.range.start, span.range.end
+            )));
+        }
+        if span.range.start < previous_end {
+            return Err(error(format!(
+                "highlight span {}..{} overlaps or precedes the span ending at {previous_end}; \
+                 spans must be ordered and non-overlapping",
+                span.range.start, span.range.end
+            )));
+        }
+        if span.range.end > length {
+            return Err(error(format!(
+                "highlight span {}..{} exceeds the {length}-character document",
+                span.range.start, span.range.end
+            )));
+        }
+        previous_end = span.range.end;
+    }
+    if let Some(selection) = selection
+        && (selection.anchor > length || selection.head > length)
+    {
+        return Err(error(format!(
+            "selection {}..{} exceeds the {length}-character document",
+            selection.anchor, selection.head
+        )));
     }
     Ok(())
 }

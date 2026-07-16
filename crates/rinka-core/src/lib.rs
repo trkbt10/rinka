@@ -17,6 +17,7 @@ mod reconcile;
 mod runtime;
 mod semantics;
 mod services;
+mod text_editing;
 mod toolbar;
 mod validation;
 mod window;
@@ -36,10 +37,11 @@ pub use chord::{
 pub use clipboard::{Clipboard, ClipboardError, ClipboardFlavor, ClipboardService};
 pub use element::{
     Element, Key, button, canvas, column, image, input, label, list, list_row, mount_pattern,
-    progress, row, scroll, separator, spacer, status, toggle,
+    progress, row, scroll, separator, spacer, status, text_area, toggle,
 };
 pub use event::{
-    ActivateHandler, EventBindings, InputHandler, PointerHandler, SortHandler, ToggleHandler,
+    ActivateHandler, EventBindings, InputHandler, PointerHandler, SelectionChangeHandler,
+    SortHandler, TextChangeHandler, ToggleHandler,
 };
 pub use menu::{ContextMenu, MenuEntry, MenuItem, MenuItemRole, Submenu};
 pub use pattern::{PatternRegion, UiPattern};
@@ -52,6 +54,10 @@ pub use semantics::{
     StatusTone, Symbol, TableColumn, TableSort, TextRole,
 };
 pub use services::PlatformServices;
+pub use text_editing::{
+    HighlightRole, HighlightSpan, HighlightSpans, TextChange, TextContent, TextEdit, TextRange,
+    TextRevision, TextSelection, TextSyncAction, char_range_to_byte_range,
+};
 pub use toolbar::{
     ToolbarAction, ToolbarChoice, ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem,
     ToolbarItemKind, ToolbarPlacement,

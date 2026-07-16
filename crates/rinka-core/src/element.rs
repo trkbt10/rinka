@@ -1,7 +1,7 @@
 //! Immutable declarative element descriptions and semantic roles.
 
 use crate::accelerator::Accelerator;
-use crate::event::{EventHandlers, InputHandler};
+use crate::event::{EventHandlers, InputHandler, SelectionChangeHandler, TextChangeHandler};
 use crate::menu::{ContextMenu, MenuEntry};
 use crate::semantics::*;
 use crate::{ActivateHandler, ToggleHandler};
@@ -239,11 +239,60 @@ impl Element {
         self
     }
 
-    /// Sets a label's semantic role.
+    /// Sets a label's or text area's semantic typography role.
     pub fn text_role(mut self, role: TextRole) -> Self {
         match &mut self.props {
-            Props::Label { role: value, .. } => *value = role,
-            _ => panic!("text_role is valid only for a label"),
+            Props::Label { role: value, .. } | Props::TextArea { role: value, .. } => {
+                *value = role;
+            }
+            _ => panic!("text_role is valid only for a label or a text area"),
+        }
+        self
+    }
+
+    /// Marks a text area as rejecting user edits while keeping selection,
+    /// copying, and programmatic updates available.
+    pub fn read_only(mut self, read_only: bool) -> Self {
+        match &mut self.props {
+            Props::TextArea {
+                read_only: value, ..
+            } => *value = read_only,
+            _ => panic!("read_only is valid only for a text area"),
+        }
+        self
+    }
+
+    /// Declares a text area's revisioned semantic highlight spans.
+    pub fn highlight_spans(mut self, spans: crate::HighlightSpans) -> Self {
+        match &mut self.props {
+            Props::TextArea { spans: value, .. } => *value = spans,
+            _ => panic!("highlight_spans is valid only for a text area"),
+        }
+        self
+    }
+
+    /// Controls a text area's selection.
+    ///
+    /// Applying a selection that differs from the native one also scrolls
+    /// the caret into view; echoing the selection last reported through
+    /// [`Element::on_selection_change`] leaves the native view untouched.
+    pub fn text_selection(mut self, selection: crate::TextSelection) -> Self {
+        match &mut self.props {
+            Props::TextArea {
+                selection: value, ..
+            } => *value = Some(selection),
+            _ => panic!("text_selection is valid only for a text area"),
+        }
+        self
+    }
+
+    /// Handles native selection changes in a text area.
+    pub fn on_selection_change(mut self, handler: impl Fn(crate::TextSelection) + 'static) -> Self {
+        match &self.props {
+            Props::TextArea { .. } => {
+                self.handlers.selection_change = Some(Rc::new(handler) as SelectionChangeHandler);
+            }
+            _ => panic!("on_selection_change is valid only for a text area"),
         }
         self
     }
@@ -398,6 +447,31 @@ pub fn input(
         accessibility_label: accessibility_label.into(),
     });
     element.handlers.input = Some(Rc::new(handler) as InputHandler);
+    element
+}
+
+/// Creates a multi-line editable text view backed by the platform's native
+/// text control.
+///
+/// The document is reconciled by revision under the controlled-text protocol
+/// documented on [`crate::TextContent`]: native edits arrive as
+/// [`crate::TextChange`] deltas through `handler`, the application applies
+/// them to its own copy, and echoes the event's revision on the next render
+/// so reconciliation never disturbs in-flight typing or IME composition.
+pub fn text_area(
+    content: crate::TextContent,
+    accessibility_label: impl Into<String>,
+    handler: impl Fn(crate::TextChange) + 'static,
+) -> Element {
+    let mut element = Element::leaf(Props::TextArea {
+        content,
+        spans: crate::HighlightSpans::none(),
+        selection: None,
+        read_only: false,
+        role: TextRole::Body,
+        accessibility_label: accessibility_label.into(),
+    });
+    element.handlers.text_change = Some(Rc::new(handler) as TextChangeHandler);
     element
 }
 

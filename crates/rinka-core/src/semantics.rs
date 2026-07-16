@@ -11,6 +11,8 @@ pub enum ElementKind {
     Button,
     /// Editable text or search field.
     Input,
+    /// Multi-line editable text view.
+    TextArea,
     /// Binary control.
     Toggle,
     /// Progress indicator.
@@ -515,6 +517,23 @@ pub enum Props {
         /// Screen-reader label.
         accessibility_label: String,
     },
+    /// Multi-line text area properties.
+    TextArea {
+        /// Revisioned document content reconciled by the controlled-text
+        /// protocol documented on [`crate::TextContent`].
+        content: crate::TextContent,
+        /// Revisioned semantic highlight spans.
+        spans: crate::HighlightSpans,
+        /// Controlled selection; [`None`] leaves selection to the native view.
+        selection: Option<crate::TextSelection>,
+        /// Whether user edits are rejected while selection and copying stay
+        /// available.
+        read_only: bool,
+        /// Typography intent of the editable text.
+        role: TextRole,
+        /// Screen-reader label.
+        accessibility_label: String,
+    },
     /// Toggle properties.
     Toggle {
         /// Visible label.
@@ -646,6 +665,10 @@ impl Props {
                 accessibility_label,
                 ..
             }
+            | Self::TextArea {
+                accessibility_label,
+                ..
+            }
             | Self::Toggle {
                 accessibility_label,
                 ..
@@ -681,6 +704,7 @@ impl Props {
             Self::Label { .. } => ElementKind::Label,
             Self::Button { .. } => ElementKind::Button,
             Self::Input { .. } => ElementKind::Input,
+            Self::TextArea { .. } => ElementKind::TextArea,
             Self::Toggle { .. } => ElementKind::Toggle,
             Self::Progress { .. } => ElementKind::Progress,
             Self::Image { .. } => ElementKind::Image,
