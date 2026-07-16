@@ -292,6 +292,173 @@ impl PropertyPatch {
             }),
         }
     }
+    /// Applies this property delta to a retained declarative snapshot.
+    ///
+    /// Adapters that mirror native state in Props use this method so the
+    /// patch-to-properties mapping remains owned by the common contract.
+    pub fn apply_to(&self, props: &mut Props) {
+        match self {
+            PropertyPatch::Label {
+                text,
+                role,
+                selectable,
+            } => {
+                *props = Props::Label {
+                    text: text.clone(),
+                    role: *role,
+                    selectable: *selectable,
+                };
+            }
+            PropertyPatch::Button {
+                label,
+                role,
+                size,
+                material,
+                enabled,
+                tooltip,
+                accessibility_label,
+            } => {
+                *props = Props::Button {
+                    label: label.clone(),
+                    role: *role,
+                    size: *size,
+                    material: *material,
+                    enabled: *enabled,
+                    tooltip: tooltip.clone(),
+                    accessibility_label: accessibility_label.clone(),
+                };
+            }
+            PropertyPatch::Input {
+                value,
+                placeholder,
+                kind,
+                enabled,
+                accessibility_label,
+            } => {
+                *props = Props::Input {
+                    value: value.clone(),
+                    placeholder: placeholder.clone(),
+                    kind: *kind,
+                    enabled: *enabled,
+                    accessibility_label: accessibility_label.clone(),
+                };
+            }
+            PropertyPatch::Toggle {
+                label,
+                value,
+                size,
+                enabled,
+                accessibility_label,
+            } => {
+                *props = Props::Toggle {
+                    label: label.clone(),
+                    value: *value,
+                    size: *size,
+                    enabled: *enabled,
+                    accessibility_label: accessibility_label.clone(),
+                };
+            }
+            PropertyPatch::Progress {
+                fraction,
+                accessibility_label,
+            } => {
+                *props = Props::Progress {
+                    fraction: *fraction,
+                    accessibility_label: accessibility_label.clone(),
+                };
+            }
+            PropertyPatch::Separator { axis } => {
+                *props = Props::Separator { axis: *axis };
+            }
+            PropertyPatch::Stack {
+                axis,
+                spacing,
+                padding,
+                align,
+                justify,
+            } => {
+                *props = Props::Stack {
+                    axis: *axis,
+                    spacing: *spacing,
+                    padding: *padding,
+                    align: *align,
+                    justify: *justify,
+                };
+            }
+            PropertyPatch::Spacer {
+                horizontal,
+                vertical,
+            } => {
+                *props = Props::Spacer {
+                    horizontal: *horizontal,
+                    vertical: *vertical,
+                };
+            }
+            PropertyPatch::Scroll { axis } => {
+                *props = Props::Scroll { axis: *axis };
+            }
+            PropertyPatch::Split { role, collapsible } => {
+                *props = Props::Split {
+                    role: *role,
+                    collapsible: *collapsible,
+                };
+            }
+            PropertyPatch::Workspace {
+                sidebar_collapsible,
+                inspector_collapsible,
+            } => {
+                *props = Props::Workspace {
+                    sidebar_collapsible: *sidebar_collapsible,
+                    inspector_collapsible: *inspector_collapsible,
+                };
+            }
+            PropertyPatch::List {
+                accessibility_label,
+                style,
+                columns,
+            } => {
+                *props = Props::List {
+                    accessibility_label: accessibility_label.clone(),
+                    style: *style,
+                    columns: columns.clone(),
+                };
+            }
+            PropertyPatch::ListRow {
+                title,
+                subtitle,
+                cells,
+                role,
+                expanded,
+                symbol,
+                selected,
+                disclosure,
+                accessibility_label,
+            } => {
+                *props = Props::ListRow {
+                    title: title.clone(),
+                    subtitle: subtitle.clone(),
+                    cells: cells.clone(),
+                    role: *role,
+                    expanded: *expanded,
+                    symbol: *symbol,
+                    selected: *selected,
+                    disclosure: *disclosure,
+                    accessibility_label: accessibility_label.clone(),
+                };
+            }
+            PropertyPatch::Status {
+                title,
+                message,
+                tone,
+            } => {
+                *props = Props::Status {
+                    title: title.clone(),
+                    message: message.clone(),
+                    tone: *tone,
+                };
+            }
+        }
+    }
 }
 
 /// Adapter between reconciliation and a retained native view tree.
@@ -348,5 +515,42 @@ pub trait NativeBackend {
     /// Releases adapter-owned resources associated with an object.
     fn destroy(&mut self, _handle: &Self::Handle) -> Result<(), Self::Error> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PropertyPatch;
+    use crate::{ListRowRole, Props, Symbol};
+
+    #[test]
+    fn applying_a_patch_reconstructs_the_next_props_snapshot() {
+        let mut current = Props::ListRow {
+            title: "Before".to_owned(),
+            subtitle: None,
+            cells: vec!["1 KB".to_owned()],
+            role: ListRowRole::Item,
+            expanded: false,
+            symbol: Some(Symbol::File),
+            selected: false,
+            disclosure: false,
+            accessibility_label: "Before, 1 KB".to_owned(),
+        };
+        let next = Props::ListRow {
+            title: "After".to_owned(),
+            subtitle: Some("Changed".to_owned()),
+            cells: vec!["2 KB".to_owned()],
+            role: ListRowRole::Item,
+            expanded: true,
+            symbol: Some(Symbol::Code),
+            selected: true,
+            disclosure: true,
+            accessibility_label: "After, Changed, 2 KB".to_owned(),
+        };
+
+        let patch = PropertyPatch::between(&current, &next).expect("changed properties");
+        patch.apply_to(&mut current);
+
+        assert_eq!(current, next);
     }
 }
