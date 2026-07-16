@@ -1,5 +1,6 @@
 //! Native host mutation contract and property snapshots.
 
+use crate::dock::DockTabMenus;
 use crate::drag::{DragPayload, DropTarget, FilePromise};
 use crate::menu::ContextMenu;
 use crate::{Element, Props};
@@ -20,6 +21,7 @@ pub struct PropertyPatch {
     next_file_promise: Option<FilePromise>,
     next_drag_payload: Option<DragPayload>,
     next_drop_target: Option<DropTarget>,
+    next_dock_tab_menus: Option<DockTabMenus>,
 }
 
 impl PropertyPatch {
@@ -28,13 +30,15 @@ impl PropertyPatch {
             || old.context_menu_model() != new.context_menu_model()
             || old.file_promise_model() != new.file_promise_model()
             || old.drag_payload_model() != new.drag_payload_model()
-            || old.drop_target_model() != new.drop_target_model())
+            || old.drop_target_model() != new.drop_target_model()
+            || old.dock_tab_menus_model() != new.dock_tab_menus_model())
         .then(|| Self {
             next: new.props().clone(),
             next_context_menu: new.context_menu_model().cloned(),
             next_file_promise: new.file_promise_model().cloned(),
             next_drag_payload: new.drag_payload_model().cloned(),
             next_drop_target: new.drop_target_model().cloned(),
+            next_dock_tab_menus: new.dock_tab_menus_model().cloned(),
         })
     }
 
@@ -70,6 +74,14 @@ impl PropertyPatch {
     /// `None` means the element accepts no drops after this update.
     pub fn drop_target(&self) -> Option<&DropTarget> {
         self.next_drop_target.as_ref()
+    }
+
+    /// Returns the complete per-tab dock menu models requested by this
+    /// update.
+    ///
+    /// `None` means no tab carries a menu after this update.
+    pub fn dock_tab_menus(&self) -> Option<&DockTabMenus> {
+        self.next_dock_tab_menus.as_ref()
     }
 }
 

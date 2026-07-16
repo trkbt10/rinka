@@ -136,6 +136,17 @@ pub fn validate_element(element: &Element) -> Result<(), WindowsDiagnostic> {
             capability: "multi-line text area",
         });
     }
+    if element.kind() == ElementKind::Dock {
+        // The Win32 contract probe has no tabbed-document dock realization
+        // (Common Controls tab strips cannot satisfy the reorder-and-split
+        // contract); the intended Windows realization is the WinUI TabView
+        // mapping recorded in reports/document-tabs-and-splits. It rejects
+        // the capability instead of substituting an unrelated control.
+        return Err(WindowsDiagnostic::UnsupportedCapability {
+            element: ElementKind::Dock,
+            capability: "tabbed-document dock",
+        });
+    }
     Ok(())
 }
 
@@ -185,6 +196,28 @@ mod tests {
     #[test]
     fn ordinary_native_button_is_supported() {
         assert_eq!(validate_element(&button("Action", "Action", || {})), Ok(()));
+    }
+
+    #[test]
+    fn tabbed_document_dock_is_a_typed_unsupported_capability() {
+        use rinka_core::{DockGroup, DockLayout, DockTab};
+        let element = rinka_core::dock(
+            DockLayout::single_group(DockGroup::new(
+                "documents",
+                [DockTab::new("readme", "README.md")],
+                "readme",
+            )),
+            "Documents",
+            [rinka_core::label("readme contents").with_key("readme")],
+            |_| {},
+        );
+        assert_eq!(
+            validate_element(&element),
+            Err(WindowsDiagnostic::UnsupportedCapability {
+                element: ElementKind::Dock,
+                capability: "tabbed-document dock",
+            })
+        );
     }
 
     #[test]

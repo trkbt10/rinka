@@ -118,6 +118,14 @@ pub enum TreeError {
         /// Human-readable invariant violation.
         reason: String,
     },
+    /// A dock declared an invalid layout, mismatched content children, or
+    /// invalid per-tab menus.
+    InvalidDock {
+        /// Element path used for diagnostics.
+        path: String,
+        /// Human-readable invariant violation.
+        reason: String,
+    },
 }
 
 impl fmt::Display for TreeError {
@@ -175,6 +183,9 @@ impl fmt::Display for TreeError {
             }
             Self::InvalidMenuBar { path, reason } => {
                 write!(formatter, "invalid menu bar at {path}: {reason}")
+            }
+            Self::InvalidDock { path, reason } => {
+                write!(formatter, "invalid dock at {path}: {reason}")
             }
         }
     }
@@ -302,7 +313,10 @@ fn validate_node(element: &Element, path: &str) -> Result<(), TreeError> {
         | crate::ElementKind::Spacer
         | crate::ElementKind::Status
         | crate::ElementKind::Canvas => Some(0),
-        crate::ElementKind::Stack | crate::ElementKind::List | crate::ElementKind::ListRow => None,
+        crate::ElementKind::Stack
+        | crate::ElementKind::List
+        | crate::ElementKind::ListRow
+        | crate::ElementKind::Dock => None,
     };
     if let Some(exact) = exact
         && children.len() != exact
@@ -333,6 +347,10 @@ fn validate_node(element: &Element, path: &str) -> Result<(), TreeError> {
         validate_text_area(element, path)?;
     }
 
+    if element.kind() == crate::ElementKind::Dock {
+        validate_dock(element, path)?;
+    }
+
     if element.kind() == crate::ElementKind::List {
         for (index, child) in children.iter().enumerate() {
             if child.kind() != crate::ElementKind::ListRow {
@@ -358,6 +376,60 @@ fn validate_node(element: &Element, path: &str) -> Result<(), TreeError> {
             .key()
             .map_or_else(|| index.to_string(), |key| key.as_str().to_owned());
         validate_node(child, &format!("{path}/{name}"))?;
+    }
+    Ok(())
+}
+
+/// Checks the dock invariants: a structurally valid layout, exactly one
+/// keyed content child per tab id, and per-tab menus that reference existing
+/// tabs with valid entry identities.
+fn validate_dock(element: &Element, path: &str) -> Result<(), TreeError> {
+    let crate::Props::Dock { layout, .. } = element.props() else {
+        return Ok(());
+    };
+    let error = |reason: String| TreeError::InvalidDock {
+        path: path.to_owned(),
+        reason,
+    };
+    if let Some(reason) = layout.invalid_reason() {
+        return Err(error(reason));
+    }
+    let tab_ids: HashSet<&str> = layout.tab_ids().into_iter().collect();
+    let mut keyed = HashSet::new();
+    for (index, child) in element.children().iter().enumerate() {
+        let Some(key) = child.key() else {
+            return Err(error(format!(
+                "dock content child at index {index} has no key; dock content is keyed by tab id"
+            )));
+        };
+        if !tab_ids.contains(key.as_str()) {
+            return Err(error(format!(
+                "dock content child key '{}' matches no tab id in the layout",
+                key.as_str()
+            )));
+        }
+        // Duplicate sibling keys are rejected by the general keyed-children
+        // invariant before this check runs.
+        keyed.insert(key.as_str());
+    }
+    if keyed.len() != tab_ids.len() {
+        return Err(error(format!(
+            "layout declares {} tabs but {} content children; every tab id needs exactly one keyed child",
+            tab_ids.len(),
+            keyed.len()
+        )));
+    }
+    if let Some(menus) = element.dock_tab_menus_model() {
+        for (tab_id, menu) in menus.entries() {
+            if !tab_ids.contains(tab_id.as_str()) {
+                return Err(error(format!(
+                    "dock tab menu is declared for unknown tab '{tab_id}'"
+                )));
+            }
+            if let Err(reason) = menu.validate_identities() {
+                return Err(error(format!("menu of tab '{tab_id}': {reason}")));
+            }
+        }
     }
     Ok(())
 }

@@ -7,6 +7,12 @@ fn first_unsupported_element(node: &MountedNode<ProjectedHandle>) -> Option<WinU
             capability: "owned-drawing canvas surface",
         });
     }
+    if node.element().kind() == ElementKind::Dock {
+        return Some(WinUiDiagnostic::UnsupportedElementCapability {
+            kind: ElementKind::Dock,
+            capability: "tabbed-document dock",
+        });
+    }
     node.children().iter().find_map(first_unsupported_element)
 }
 
@@ -172,6 +178,12 @@ fn render_node(node: &MountedNode<ProjectedHandle>) -> ui::Element {
         // here and projects nothing; the runtime rejection path is tracked
         // by the image-display ticket as a WinUI follow-up.
         Props::Image { .. } => ui::Element::Empty,
+        // Unreachable for declared content: validate_application rejects the
+        // dock with a typed diagnostic before projection. The intended
+        // native mapping — WinUI TabView per group (CanReorderTabs, drag
+        // between TabViews, TabDroppedOutside) over sized Grid splits — is
+        // recorded in reports/document-tabs-and-splits.
+        Props::Dock { .. } => ui::Element::Empty,
     }
 }
 

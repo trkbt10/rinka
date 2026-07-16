@@ -659,6 +659,12 @@ fn create_element(
             accessibility_label,
             events,
         )),
+        // Typed unsupported-capability rejection until the AppKit dock
+        // realization lands (reports/document-tabs-and-splits); the tree is
+        // rejected, never substituted.
+        Props::Dock { .. } => Err(AppKitError(
+            "the AppKit host does not yet realize the tabbed-document dock".to_owned(),
+        )),
     }
 }
 

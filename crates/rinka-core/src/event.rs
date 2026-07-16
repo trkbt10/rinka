@@ -1,5 +1,6 @@
 //! Stable event slots shared by the reconciler and native adapters.
 
+use crate::dock::{DockEvent, DockTabMenus};
 use crate::drag::{DragPayload, DropTarget, FileDrop, FilePromise, PayloadDrop};
 use crate::menu::ContextMenu;
 use crate::{ImeEvent, KeyEvent, PointerEvent, TableSort, TextChange, TextSelection};
@@ -32,6 +33,8 @@ pub type ImeHandler = Rc<dyn Fn(ImeEvent)>;
 /// Callback used by input-accepting canvases for focus changes; `true`
 /// reports focus gained, `false` focus lost.
 pub type FocusHandler = Rc<dyn Fn(bool)>;
+/// Callback used by docks for semantic tab and split operation requests.
+pub type DockHandler = Rc<dyn Fn(DockEvent)>;
 
 /// Event handlers associated with one declarative element.
 #[derive(Clone, Default)]
@@ -56,6 +59,10 @@ pub struct EventHandlers {
     pub(crate) file_promise: Option<FilePromise>,
     pub(crate) drag_payload: Option<DragPayload>,
     pub(crate) drop_target: Option<DropTarget>,
+    pub(crate) dock: Option<DockHandler>,
+    /// The per-tab menu models ride with the handlers because their items
+    /// carry activation closures that must stay current across renders.
+    pub(crate) dock_tab_menus: Option<DockTabMenus>,
 }
 
 impl fmt::Debug for EventHandlers {
@@ -78,6 +85,8 @@ impl fmt::Debug for EventHandlers {
             .field("file_promise", &self.file_promise.is_some())
             .field("drag_payload", &self.drag_payload.is_some())
             .field("drop_target", &self.drop_target.is_some())
+            .field("dock", &self.dock.is_some())
+            .field("dock_tab_menus", &self.dock_tab_menus.is_some())
             .finish()
     }
 }
@@ -100,6 +109,8 @@ struct EventSlots {
     file_promise: Option<FilePromise>,
     drag_payload: Option<DragPayload>,
     drop_target: Option<DropTarget>,
+    dock: Option<DockHandler>,
+    dock_tab_menus: Option<DockTabMenus>,
 }
 
 impl EventSlots {
@@ -121,6 +132,8 @@ impl EventSlots {
             file_promise: handlers.file_promise.clone(),
             drag_payload: handlers.drag_payload.clone(),
             drop_target: handlers.drop_target.clone(),
+            dock: handlers.dock.clone(),
+            dock_tab_menus: handlers.dock_tab_menus.clone(),
         }
     }
 }
@@ -174,6 +187,8 @@ impl EventBindings {
         slots.file_promise.clone_from(&handlers.file_promise);
         slots.drag_payload.clone_from(&handlers.drag_payload);
         slots.drop_target.clone_from(&handlers.drop_target);
+        slots.dock.clone_from(&handlers.dock);
+        slots.dock_tab_menus.clone_from(&handlers.dock_tab_menus);
     }
 
     /// Emits an activation event through the current handler.
@@ -329,6 +344,46 @@ impl EventBindings {
         }
     }
 
+    /// Emits a semantic dock operation request through the current handler
+    /// and returns whether a handler consumed it.
+    pub fn emit_dock(&self, event: DockEvent) -> bool {
+        let handler = self.0.borrow().dock.clone();
+        match handler {
+            Some(handler) => {
+                handler(event);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Dispatches the activation of one dock tab's menu item through the
+    /// current per-tab menu models and returns whether a handler ran.
+    ///
+    /// An unknown tab, an unknown item, a disabled item, and an item inside
+    /// a disabled submenu do not dispatch, matching the element context-menu
+    /// contract.
+    pub fn emit_dock_tab_menu_activation(&self, tab_id: &str, item_id: &str) -> bool {
+        let handler = self
+            .0
+            .borrow()
+            .dock_tab_menus
+            .as_ref()
+            .and_then(|menus| menus.menu_for(tab_id))
+            .and_then(|menu| menu.activation_handler(item_id));
+        if let Some(handler) = handler {
+            handler();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Returns the current per-tab dock menu models.
+    pub fn dock_tab_menus(&self) -> Option<DockTabMenus> {
+        self.0.borrow().dock_tab_menus.clone()
+    }
+
     /// Returns the current file-promise drag-source model.
     ///
     /// Adapters read this at drag-session start and at promise
@@ -370,6 +425,8 @@ impl fmt::Debug for EventBindings {
             .field("file_promise", &slots.file_promise.is_some())
             .field("drag_payload", &slots.drag_payload.is_some())
             .field("drop_target", &slots.drop_target.is_some())
+            .field("dock", &slots.dock.is_some())
+            .field("dock_tab_menus", &slots.dock_tab_menus.is_some())
             .finish()
     }
 }

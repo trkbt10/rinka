@@ -9,6 +9,7 @@ mod canvas;
 mod chord;
 mod clipboard;
 mod dialog;
+mod dock;
 mod drag;
 mod element;
 mod event;
@@ -44,17 +45,21 @@ pub use dialog::{
     DialogOutcome, DialogRequest, DialogResponder, DialogService, Dialogs, OpenPanelDescription,
     SavePanelDescription,
 };
+pub use dock::{
+    DockEdge, DockEvent, DockGroup, DockLayout, DockNode, DockSplit, DockSplitItem, DockTab,
+    DockTabMenus,
+};
 pub use drag::{
     DragPayload, DropPosition, DropTarget, FileDrop, FilePromise, FilePromiseWriter, PayloadDrop,
 };
 pub use element::{
-    Element, Key, button, canvas, column, image, input, label, list, list_row, mount_pattern,
+    Element, Key, button, canvas, column, dock, image, input, label, list, list_row, mount_pattern,
     progress, row, scroll, separator, spacer, status, text_area, toggle,
 };
 pub use event::{
-    ActivateHandler, EventBindings, FileDropHandler, FocusHandler, ImeHandler, InputHandler,
-    KeyHandler, PayloadDropHandler, PointerHandler, SelectionChangeHandler, SortHandler,
-    TextChangeHandler, ToggleHandler,
+    ActivateHandler, DockHandler, EventBindings, FileDropHandler, FocusHandler, ImeHandler,
+    InputHandler, KeyHandler, PayloadDropHandler, PointerHandler, SelectionChangeHandler,
+    SortHandler, TextChangeHandler, ToggleHandler,
 };
 pub use menu::{ContextMenu, MenuEntry, MenuItem, MenuItemRole, Submenu};
 pub use menu_bar::{

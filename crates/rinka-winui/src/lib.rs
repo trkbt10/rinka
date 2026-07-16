@@ -256,6 +256,17 @@ fn validate_content(window_id: &str, element: &Element) -> Result<(), WinUiDiagn
             element: ElementKind::TextArea,
         });
     }
+    if element.kind() == ElementKind::Dock {
+        // The WinUI host has no tabbed-document dock realization yet. The
+        // intended native mapping — TabView per group (CanReorderTabs, drag
+        // between TabViews, TabDroppedOutside) over sized Grid splits — is
+        // recorded in reports/document-tabs-and-splits; it rejects the tree
+        // instead of substituting an unrelated control.
+        return Err(WinUiDiagnostic::UnsupportedElement {
+            window_id: window_id.to_owned(),
+            element: ElementKind::Dock,
+        });
+    }
     if element.file_promise_model().is_some()
         || element.drag_payload_model().is_some()
         || element.drop_target_model().is_some()
@@ -457,6 +468,29 @@ mod tests {
             Err(WinUiDiagnostic::UnsupportedElement {
                 window_id: "main".to_owned(),
                 element: rinka_core::ElementKind::TextArea,
+            })
+        );
+    }
+
+    #[test]
+    fn tabbed_document_dock_content_is_a_typed_diagnostic() {
+        use rinka_core::{DockGroup, DockLayout, DockTab};
+        let mut with_dock = window("main", WindowKind::Main);
+        with_dock.content = WindowContent::from(rinka_core::dock(
+            DockLayout::single_group(DockGroup::new(
+                "documents",
+                [DockTab::new("readme", "README.md")],
+                "readme",
+            )),
+            "Documents",
+            [label("readme contents").with_key("readme")],
+            |_| {},
+        ));
+        assert_eq!(
+            validate_application(&application(vec![with_dock])),
+            Err(WinUiDiagnostic::UnsupportedElement {
+                window_id: "main".to_owned(),
+                element: rinka_core::ElementKind::Dock,
             })
         );
     }

@@ -37,6 +37,8 @@ pub enum ElementKind {
     Status,
     /// Owned-drawing surface reserved for inherently graphical content.
     Canvas,
+    /// Tabbed-document area over user-rearrangeable splits.
+    Dock,
 }
 
 /// Primary layout direction.
@@ -657,6 +659,18 @@ pub enum Props {
         /// Screen-reader description of the graphical content.
         accessibility_label: String,
     },
+    /// Tabbed-document dock properties.
+    ///
+    /// The layout is the complete declarative split-and-group description;
+    /// the element's children are the tab content subtrees, one per tab,
+    /// keyed by tab id. Native gestures surface as [`crate::DockEvent`]
+    /// requests through the element's stable event binding.
+    Dock {
+        /// Declarative split tree whose leaves are tab groups.
+        layout: crate::DockLayout,
+        /// Screen-reader label of the dock area.
+        accessibility_label: String,
+    },
 }
 
 impl Props {
@@ -699,6 +713,10 @@ impl Props {
             | Self::Canvas {
                 accessibility_label,
                 ..
+            }
+            | Self::Dock {
+                accessibility_label,
+                ..
             } => Some(accessibility_label),
             Self::Status { title, .. } => Some(title),
             _ => None,
@@ -724,6 +742,7 @@ impl Props {
             Self::ListRow { .. } => ElementKind::ListRow,
             Self::Status { .. } => ElementKind::Status,
             Self::Canvas { .. } => ElementKind::Canvas,
+            Self::Dock { .. } => ElementKind::Dock,
         }
     }
 }

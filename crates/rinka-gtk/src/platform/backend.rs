@@ -172,6 +172,18 @@ fn validate_element(element: &Element) -> Result<(), GtkError> {
                 "the GTK host does not yet realize the bitmap image element".to_owned(),
             ));
         }
+        Props::Dock { .. } => {
+            // Typed unsupported-capability rejection per the AGENTS contract:
+            // the GTK adapter does not yet realize the tabbed-document dock.
+            // The intended mapping is genuinely native — AdwTabBar +
+            // AdwTabView per group (native drag reorder, transfer between
+            // views, and detach signals) over recursive GtkPaned splits —
+            // and is recorded in reports/document-tabs-and-splits; until it
+            // exists the declaration is rejected, never substituted.
+            return Err(GtkError(
+                "the GTK host does not yet realize the tabbed-document dock".to_owned(),
+            ));
+        }
         Props::Label { .. }
         | Props::Separator { .. }
         | Props::Spacer { .. }
@@ -490,6 +502,12 @@ fn create_element(
         }
         Props::Canvas { .. } => Err(GtkError(
             "GTK adapter does not implement the owned-drawing canvas element yet".to_owned(),
+        )),
+        // Unreachable in practice: validate_element rejects the dock before
+        // any native mutation; the AdwTabBar/AdwTabView mapping is recorded
+        // in reports/document-tabs-and-splits.
+        Props::Dock { .. } => Err(GtkError(
+            "the GTK host does not yet realize the tabbed-document dock".to_owned(),
         )),
     }
 }
@@ -914,6 +932,11 @@ fn apply_patch(
         Props::TextArea { .. } => {
             return Err(GtkError(
                 "the GTK host does not yet realize the multi-line text area".to_owned(),
+            ));
+        }
+        Props::Dock { .. } => {
+            return Err(GtkError(
+                "the GTK host does not yet realize the tabbed-document dock".to_owned(),
             ));
         }
     }

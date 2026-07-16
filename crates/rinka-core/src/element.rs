@@ -1,8 +1,11 @@
 //! Immutable declarative element descriptions and semantic roles.
 
 use crate::accelerator::Accelerator;
+use crate::dock::{DockLayout, DockTabMenus};
 use crate::drag::{DragPayload, DropTarget, FileDrop, FilePromise, PayloadDrop};
-use crate::event::{EventHandlers, InputHandler, SelectionChangeHandler, TextChangeHandler};
+use crate::event::{
+    DockHandler, EventHandlers, InputHandler, SelectionChangeHandler, TextChangeHandler,
+};
 use crate::menu::{ContextMenu, MenuEntry};
 use crate::menu_bar::MenuBar;
 use crate::semantics::*;
@@ -551,6 +554,36 @@ impl Element {
         self.handlers.drop_target.as_ref()
     }
 
+    /// Attaches a declarative native context menu to one dock tab.
+    ///
+    /// The platform opens the menu through its contextual interaction on the
+    /// tab, anchored at the interaction point, and activation dispatches
+    /// through the dock element's stable event binding — handlers stay
+    /// current across renders without reconnecting the native menu. The
+    /// consumer builds each tab's entries with the tab identity baked in
+    /// (Close Others, Close to the Right).
+    pub fn dock_tab_menu(
+        mut self,
+        tab_id: impl Into<String>,
+        entries: impl IntoIterator<Item = MenuEntry>,
+    ) -> Self {
+        match &self.props {
+            Props::Dock { .. } => {
+                self.handlers
+                    .dock_tab_menus
+                    .get_or_insert_with(DockTabMenus::default)
+                    .insert(tab_id.into(), ContextMenu::new(entries));
+            }
+            _ => panic!("dock_tab_menu is valid only for a dock"),
+        }
+        self
+    }
+
+    /// Returns the attached per-tab dock menu models.
+    pub fn dock_tab_menus_model(&self) -> Option<&DockTabMenus> {
+        self.handlers.dock_tab_menus.as_ref()
+    }
+
     /// Declares the application menu bar on the window's content root.
     ///
     /// The declaration is reconciled like every other description: while this
@@ -819,6 +852,34 @@ pub fn canvas(
         ime_caret: None,
         accessibility_label: accessibility_label.into(),
     })
+}
+
+/// Creates a tabbed-document dock over user-rearrangeable splits.
+///
+/// `layout` is the complete declarative description — a tree of weighted
+/// splits whose leaves are tab groups. `contents` are the tab content
+/// subtrees, one per tab, each keyed by its tab id; keyed reconciliation
+/// then preserves a tab's retained native content across reorders and moves
+/// between groups. Native gestures (select, close, drag to reorder or move,
+/// drop on a content edge to split) arrive as [`crate::DockEvent`] requests
+/// through `handler`; the consumer applies them to its own layout state —
+/// [`crate::DockLayout`]'s mutation helpers implement the standard
+/// semantics, including close-last-collapses — and re-renders.
+pub fn dock(
+    layout: DockLayout,
+    accessibility_label: impl Into<String>,
+    contents: impl IntoIterator<Item = Element>,
+    handler: impl Fn(crate::DockEvent) + 'static,
+) -> Element {
+    let mut element = Element::parent(
+        Props::Dock {
+            layout,
+            accessibility_label: accessibility_label.into(),
+        },
+        contents,
+    );
+    element.handlers.dock = Some(Rc::new(handler) as DockHandler);
+    element
 }
 
 /// Creates a native empty, busy, error, or informational status page.

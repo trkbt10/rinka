@@ -230,6 +230,13 @@ fn apply_patch(
                 .ok_or_else(|| AppKitError("canvas handle has no native canvas view".to_owned()))?;
             canvas.apply_content(*size, scene, *accepts_input, *ime_caret);
         }
+        Props::Dock { .. } => {
+            // Unreachable while creation rejects the dock; kept typed so a
+            // bypassed rejection cannot silently drop the update.
+            return Err(AppKitError(
+                "the AppKit host does not yet realize the tabbed-document dock".to_owned(),
+            ));
+        }
         Props::Status { title, message, .. } => {
             if let Some(title_view) = handle.0.auxiliaries.first() {
                 set_string(title_view.as_object(), SET_STRING_VALUE, title);
