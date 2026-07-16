@@ -1483,7 +1483,6 @@ fn file_row(
     .context_menu(file_context_menu(record, model, &dispatch))
     .with_key(format!("file-{:?}", record.key));
 
-    let children = child_file_records(model, record.key);
     if drag_interactions_enabled() {
         // Every row moves within the app as a typed payload; non-folder rows
         // additionally export through a file promise, so one drag session
