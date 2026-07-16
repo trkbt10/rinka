@@ -242,42 +242,17 @@ define_class!(
 
         #[unsafe(method(tableViewSelectionDidChange:))]
         fn selection_changed(&self, notification: &AnyObject) {
-            if *self.ivars().suppress_selection.borrow() {
-                return;
-            }
-            // SAFETY: NSTableView posts this notification with itself as object.
-            let table: *mut AnyObject = unsafe { msg_send![notification, object] };
-            let Some(table) = NonNull::new(table) else {
-                return;
-            };
-            let selected: isize = unsafe { msg_send![table.as_ref(), selectedRow] };
-            let Ok(index) = usize::try_from(selected) else {
-                return;
-            };
-            let events = {
-                let rows = self.ivars().rows.borrow();
-                clear_record_selection(&rows);
-                let outline = matches!(
-                    *self.ivars().pattern.borrow(),
-                    CollectionPattern::NavigationSidebar | CollectionPattern::Outline | CollectionPattern::DataTable
-                );
-                let selected_record = if outline {
-                    // SAFETY: The notification object is the active NSOutlineView.
-                    let item: *mut AnyObject = unsafe {
-                        msg_send![table.as_ref(), itemAtRow: index]
-                    };
-                    find_outline_record(&rows, item)
-                } else {
-                    rows.get(index).cloned()
-                };
-                selected_record.map(|record| {
-                    record.borrow_mut().selected = true;
-                    record.borrow().events.clone()
-                })
-            };
-            if let Some(events) = events {
-                events.emit_activate();
-            }
+            self.dispatch_selection_change(notification);
+        }
+
+        // NSOutlineView posts its own selection notification and consults
+        // this delegate method instead of the NSTableView one, so the
+        // outline-backed patterns (NavigationSidebar, Outline, DataTable)
+        // dispatch through here; without it a live row selection never
+        // reached the consumer (found by the consumer-test-harness gate).
+        #[unsafe(method(outlineViewSelectionDidChange:))]
+        fn outline_selection_changed(&self, notification: &AnyObject) {
+            self.dispatch_selection_change(notification);
         }
 
         #[unsafe(method(tableView:sortDescriptorsDidChange:))]
@@ -481,6 +456,52 @@ impl TableDelegate {
         });
         // SAFETY: NSObject's init signature and ownership convention are stable.
         unsafe { msg_send![super(object), init] }
+    }
+
+    /// Translates one native selection change into the selected row's stable
+    /// activate binding.
+    ///
+    /// Both selection delegate callbacks land here: NSTableView consults
+    /// `tableViewSelectionDidChange:` while NSOutlineView consults
+    /// `outlineViewSelectionDidChange:`, and the reconciler's programmatic
+    /// synchronization stays silent through `suppress_selection`.
+    fn dispatch_selection_change(&self, notification: &AnyObject) {
+        if *self.ivars().suppress_selection.borrow() {
+            return;
+        }
+        // SAFETY: The table view posts this notification with itself as object.
+        let table: *mut AnyObject = unsafe { msg_send![notification, object] };
+        let Some(table) = NonNull::new(table) else {
+            return;
+        };
+        let selected: isize = unsafe { msg_send![table.as_ref(), selectedRow] };
+        let Ok(index) = usize::try_from(selected) else {
+            return;
+        };
+        let events = {
+            let rows = self.ivars().rows.borrow();
+            clear_record_selection(&rows);
+            let outline = matches!(
+                *self.ivars().pattern.borrow(),
+                CollectionPattern::NavigationSidebar
+                    | CollectionPattern::Outline
+                    | CollectionPattern::DataTable
+            );
+            let selected_record = if outline {
+                // SAFETY: The notification object is the active NSOutlineView.
+                let item: *mut AnyObject = unsafe { msg_send![table.as_ref(), itemAtRow: index] };
+                find_outline_record(&rows, item)
+            } else {
+                rows.get(index).cloned()
+            };
+            selected_record.map(|record| {
+                record.borrow_mut().selected = true;
+                record.borrow().events.clone()
+            })
+        };
+        if let Some(events) = events {
+            events.emit_activate();
+        }
     }
 }
 
