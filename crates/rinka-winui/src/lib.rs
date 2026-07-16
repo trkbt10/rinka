@@ -222,6 +222,15 @@ fn validate_content(window_id: &str, element: &Element) -> Result<(), WinUiDiagn
             capability: "context menu",
         });
     }
+    if element.kind() == ElementKind::TextArea {
+        // The WinUI host has no multi-line editable text realization yet
+        // (RichEditBox driven by the controlled-text protocol is the planned
+        // mapping); it rejects the tree instead of substituting a TextBox.
+        return Err(WinUiDiagnostic::UnsupportedElement {
+            window_id: window_id.to_owned(),
+            element: ElementKind::TextArea,
+        });
+    }
     for child in element.children() {
         validate_content(window_id, child)?;
     }
@@ -365,6 +374,24 @@ mod tests {
             Err(super::WinUiDiagnostic::UnsupportedElement {
                 window_id: "main".to_owned(),
                 element: rinka_core::ElementKind::Image,
+            })
+        );
+    }
+
+    #[test]
+    fn multi_line_text_area_content_is_a_typed_diagnostic() {
+        let content =
+            rinka_core::TextContent::new("fn main() {}\n", rinka_core::TextRevision::new(1));
+        let mut editor = window("main", WindowKind::Main);
+        editor.content =
+            WindowContent::from(column([rinka_core::text_area(content, "Editor", |_| {})]));
+        let value = application(vec![editor]);
+
+        assert_eq!(
+            validate_application(&value),
+            Err(WinUiDiagnostic::UnsupportedElement {
+                window_id: "main".to_owned(),
+                element: rinka_core::ElementKind::TextArea,
             })
         );
     }

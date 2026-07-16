@@ -102,6 +102,16 @@ fn validate_element(element: &Element) -> Result<(), GtkError> {
             }
         }
         Props::Input { .. } => {}
+        Props::TextArea { .. } => {
+            // Typed unsupported-capability rejection per the AGENTS contract:
+            // the GTK adapter does not yet realize the multi-line text area
+            // (GtkTextView over a GtkTextBuffer, with the controlled-text
+            // protocol driven from buffer change signals, is the intended
+            // mapping) and never substitutes another control for it.
+            return Err(GtkError(
+                "the GTK host does not yet realize the multi-line text area".to_owned(),
+            ));
+        }
         Props::Toggle { label, .. } => {
             require_text("toggle label", label)?;
         }
@@ -289,6 +299,10 @@ fn create_element(
         // bypassed validation cannot silently substitute a control.
         Props::Image { .. } => Err(GtkError(
             "the GTK host does not yet realize the bitmap image element".to_owned(),
+        )),
+        // Unreachable in practice for the same reason as Image above.
+        Props::TextArea { .. } => Err(GtkError(
+            "the GTK host does not yet realize the multi-line text area".to_owned(),
         )),
         Props::Separator { axis } => Ok(GtkHandle::new(
             gtk::Separator::new(orientation(*axis)),
@@ -876,6 +890,11 @@ fn apply_patch(
         Props::Canvas { .. } => {
             return Err(GtkError(
                 "GTK adapter does not implement the owned-drawing canvas element yet".to_owned(),
+            ));
+        }
+        Props::TextArea { .. } => {
+            return Err(GtkError(
+                "the GTK host does not yet realize the multi-line text area".to_owned(),
             ));
         }
     }

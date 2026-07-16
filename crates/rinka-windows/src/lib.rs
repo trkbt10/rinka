@@ -108,6 +108,16 @@ pub fn validate_element(element: &Element) -> Result<(), WindowsDiagnostic> {
             capability: "context menu",
         });
     }
+    if element.kind() == ElementKind::TextArea {
+        // The Win32 contract probe has no multi-line editable text
+        // realization yet (a multiline EDIT control cannot satisfy the
+        // highlight-span contract); it rejects the capability instead of
+        // substituting a plain input.
+        return Err(WindowsDiagnostic::UnsupportedCapability {
+            element: ElementKind::TextArea,
+            capability: "multi-line text area",
+        });
+    }
     Ok(())
 }
 
@@ -211,6 +221,20 @@ mod tests {
             Some(Err(ClipboardError::Unsupported {
                 platform: super::PLATFORM_NAME,
             }))
+        );
+    }
+
+    #[test]
+    fn multi_line_text_area_content_is_a_typed_diagnostic() {
+        let content =
+            rinka_core::TextContent::new("fn main() {}\n", rinka_core::TextRevision::new(1));
+        let element = rinka_core::text_area(content, "Editor", |_| {});
+        assert_eq!(
+            validate_element(&element),
+            Err(WindowsDiagnostic::UnsupportedCapability {
+                element: ElementKind::TextArea,
+                capability: "multi-line text area",
+            })
         );
     }
 
