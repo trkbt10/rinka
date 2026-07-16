@@ -115,6 +115,15 @@ fn validate_element(element: &Element) -> Result<(), GtkError> {
                 "GTK adapter does not implement the owned-drawing canvas element yet".to_owned(),
             ));
         }
+        // Typed diagnostic per the AGENTS contract: the GTK host does not
+        // yet realize the bitmap image element (GtkPicture over a
+        // GdkMemoryTexture is the planned mapping), and it must reject the
+        // tree instead of substituting an unrelated control.
+        Props::Image { .. } => {
+            return Err(GtkError(
+                "the GTK host does not yet realize the bitmap image element".to_owned(),
+            ));
+        }
         Props::Label { .. }
         | Props::Separator { .. }
         | Props::Spacer { .. }
@@ -256,6 +265,12 @@ fn create_element(
                 vec![progress.upcast()],
             ))
         }
+        // Unreachable in practice: validate_element rejects image content
+        // before any native mutation. Kept as a typed diagnostic so a
+        // bypassed validation cannot silently substitute a control.
+        Props::Image { .. } => Err(GtkError(
+            "the GTK host does not yet realize the bitmap image element".to_owned(),
+        )),
         Props::Separator { axis } => Ok(GtkHandle::new(
             gtk::Separator::new(orientation(*axis)),
             HostKind::Element(ElementKind::Separator),
@@ -705,6 +720,13 @@ fn apply_patch(
             progress.set_fraction(*fraction);
             progress.set_text(Some(&progress_percentage_text(*fraction)));
             progress.update_property(&[gtk::accessible::Property::Label(accessibility_label)]);
+        }
+        // Unreachable in practice: validate_element rejects image content
+        // before any native mutation.
+        Props::Image { .. } => {
+            return Err(GtkError(
+                "the GTK host does not yet realize the bitmap image element".to_owned(),
+            ));
         }
         Props::Separator { axis } => {
             downcast::<gtk::Separator>(handle)?.set_orientation(orientation(*axis));

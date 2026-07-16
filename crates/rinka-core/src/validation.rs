@@ -52,6 +52,13 @@ pub enum TreeError {
         /// Human-readable invariant violation.
         reason: String,
     },
+    /// An image element declared pixel geometry its buffer cannot satisfy.
+    InvalidImage {
+        /// Element path.
+        path: String,
+        /// Human-readable invariant violation.
+        reason: String,
+    },
     /// A mounted native window attempted to replace its promoted root class.
     WindowRootKindChanged {
         /// Root kind retained by the native window.
@@ -87,6 +94,9 @@ impl fmt::Display for TreeError {
             }
             Self::InvalidCanvasScene { path, reason } => {
                 write!(formatter, "invalid canvas at {path}: {reason}")
+            }
+            Self::InvalidImage { path, reason } => {
+                write!(formatter, "invalid image at {path}: {reason}")
             }
             Self::WindowRootKindChanged { previous, next } => write!(
                 formatter,
@@ -127,6 +137,7 @@ fn validate_node(element: &Element, path: &str) -> Result<(), TreeError> {
         | crate::ElementKind::Input
         | crate::ElementKind::Toggle
         | crate::ElementKind::Progress
+        | crate::ElementKind::Image
         | crate::ElementKind::Separator
         | crate::ElementKind::Spacer
         | crate::ElementKind::Status
@@ -147,6 +158,17 @@ fn validate_node(element: &Element, path: &str) -> Result<(), TreeError> {
     if element.kind() == crate::ElementKind::Canvas {
         validate_canvas(element, path)?;
     }
+
+    if element.kind() == crate::ElementKind::Image
+        && let crate::Props::Image { content, .. } = element.props()
+        && let Some(reason) = content.validity_error()
+    {
+        return Err(TreeError::InvalidImage {
+            path: path.to_owned(),
+            reason,
+        });
+    }
+
     if element.kind() == crate::ElementKind::List {
         for (index, child) in children.iter().enumerate() {
             if child.kind() != crate::ElementKind::ListRow {

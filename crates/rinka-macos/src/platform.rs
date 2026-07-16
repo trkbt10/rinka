@@ -7,12 +7,12 @@ use objc2_foundation::{MainThreadMarker, NSObject};
 use rinka_core::{
     Align, ApplicationSpec, Axis, ButtonMaterial, ButtonRole, CanvasColor, CanvasPoint, CanvasRect,
     CanvasSize, CanvasVector, CollectionPattern, ControlSize, DrawCommand, DrawScene, Element,
-    ElementKind, EventBindings, InputKind, Justify, LineWidth, ListRowRole, MonospaceMetrics,
-    MountedNode, NativeBackend, PanelBehavior, PatternRegion, PointerButton, PointerEvent,
-    PointerModifiers, PointerPhase, PropertyPatch, Props, Renderer, SortDirection, Spacing,
-    StatusTone, Symbol, TableColumn, TableSort, TextRole, ToolbarAction, ToolbarDisplay,
-    ToolbarGroupDisplay, ToolbarItem, ToolbarItemKind, ToolbarMenuEntry, ToolbarPlacement,
-    UiPattern, WindowKind, WindowRuntime, WindowSpec,
+    ElementKind, EventBindings, ImageContent, ImageScaling, InputKind, Justify, LineWidth,
+    ListRowRole, MonospaceMetrics, MountedNode, NativeBackend, PanelBehavior, PatternRegion,
+    PointerButton, PointerEvent, PointerModifiers, PointerPhase, PropertyPatch, Props, Renderer,
+    SortDirection, Spacing, StatusTone, Symbol, TableColumn, TableSort, TextRole, ToolbarAction,
+    ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem, ToolbarItemKind, ToolbarMenuEntry,
+    ToolbarPlacement, UiPattern, WindowKind, WindowRuntime, WindowSpec,
 };
 use std::cell::{Cell, RefCell};
 use std::error::Error;
@@ -35,3 +35,4 @@ include!("platform/layout_primitives.rs");
 include!("platform/stack_layout.rs");
 include!("platform/reconciliation.rs");
 include!("platform/native_metrics.rs");
+include!("platform/image_display.rs");

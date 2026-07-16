@@ -17,6 +17,7 @@ struct HandleInner {
     table_delegate: RefCell<Option<Retained<TableDelegate>>>,
     list_row: RefCell<Option<Rc<RefCell<TableRowRecord>>>>,
     canvas_view: RefCell<Option<Retained<CanvasView>>>,
+    image_stamp: Cell<Option<ImageStamp>>,
     parent: RefCell<Option<Weak<HandleInner>>>,
     justification_views: RefCell<Vec<Id>>,
     justification_constraints: RefCell<Vec<Id>>,
@@ -73,6 +74,7 @@ impl AppKitHandle {
             table_delegate: RefCell::new(None),
             list_row: RefCell::new(None),
             canvas_view: RefCell::new(None),
+            image_stamp: Cell::new(None),
             parent: RefCell::new(None),
             justification_views: RefCell::new(Vec::new()),
             justification_constraints: RefCell::new(Vec::new()),
@@ -100,6 +102,7 @@ impl AppKitHandle {
             table_delegate: RefCell::new(None),
             list_row: RefCell::new(None),
             canvas_view: RefCell::new(None),
+            image_stamp: Cell::new(None),
             parent: RefCell::new(None),
             justification_views: RefCell::new(Vec::new()),
             justification_constraints: RefCell::new(Vec::new()),
@@ -467,6 +470,11 @@ fn create_element(
             }
             Ok(handle)
         }
+        Props::Image {
+            content,
+            scaling,
+            accessibility_label,
+        } => create_image(content, *scaling, accessibility_label),
         Props::Separator { axis } => {
             let view = new_view(objc2::class!(NSBox));
             // SAFETY: NSBoxSeparator is the public box-type value 2.

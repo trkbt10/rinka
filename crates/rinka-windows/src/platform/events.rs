@@ -430,6 +430,19 @@ fn native_description(element: &Element) -> (&'static str, String, u32, u32) {
             // native mutation, so creation can never observe one.
             unreachable!("canvas elements are rejected by validate_element before creation")
         }
+        // Unreachable in practice: validate_element rejects the bitmap image
+        // capability before any native window is created. The placeholder
+        // carries only the accessible name so a bypassed validation stays
+        // inspectable instead of substituting a control.
+        Props::Image {
+            accessibility_label,
+            ..
+        } => (
+            STATIC_CLASS,
+            accessibility_label.clone(),
+            WS_CHILD | SS_NOTIFY,
+            0,
+        ),
     }
 }
 

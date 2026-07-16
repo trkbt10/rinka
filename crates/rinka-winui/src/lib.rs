@@ -27,6 +27,14 @@ pub enum WinUiDiagnostic {
         /// Rejected semantic kind.
         kind: WindowKind,
     },
+    /// The declared content uses a semantic element this host does not
+    /// realize yet.
+    UnsupportedElement {
+        /// Stable window identity.
+        window_id: String,
+        /// Rejected semantic element kind.
+        element: ElementKind,
+    },
     /// A panel requested behavior that the WinUI host cannot represent.
     UnsupportedPanelBehavior {
         /// Stable panel identity.
@@ -59,6 +67,12 @@ impl fmt::Display for WinUiDiagnostic {
                 write!(
                     formatter,
                     "window '{window_id}' uses unsupported kind {kind:?}"
+                )
+            }
+            Self::UnsupportedElement { window_id, element } => {
+                write!(
+                    formatter,
+                    "window '{window_id}' declares content element {element:?}, which the WinUI host does not realize yet"
                 )
             }
             Self::UnsupportedPanelBehavior { window_id, field } => write!(
@@ -119,7 +133,7 @@ fn validate_application(application: &ApplicationSpec) -> Result<(), WinUiDiagno
                 });
             }
         }
-        validate_element(&window.content.snapshot())?;
+        validate_content(window.id.as_str(), &window.content.snapshot())?;
     }
     match main_windows {
         0 => Err(WinUiDiagnostic::MissingMainWindow),
@@ -128,20 +142,31 @@ fn validate_application(application: &ApplicationSpec) -> Result<(), WinUiDiagno
     }
 }
 
-/// Validates one element subtree against WinUI element capabilities.
+/// Rejects declared content this host cannot realize, before projection.
 ///
-/// The owned-drawing canvas is not implemented by this host yet; it is
-/// rejected with a typed diagnostic and never replaced with a visually
-/// unrelated control.
-fn validate_element(element: &Element) -> Result<(), WinUiDiagnostic> {
+/// The walk sees each window's initial component view; content that only a
+/// later state transition declares is outside this startup validation.
+/// Neither the owned-drawing canvas nor the bitmap image element is
+/// implemented by this host yet; both are rejected with typed diagnostics
+/// and never replaced with a visually unrelated control.
+fn validate_content(window_id: &str, element: &Element) -> Result<(), WinUiDiagnostic> {
     if element.kind() == ElementKind::Canvas {
         return Err(WinUiDiagnostic::UnsupportedElementCapability {
             kind: ElementKind::Canvas,
             capability: "owned-drawing canvas surface",
         });
     }
+    if element.kind() == ElementKind::Image {
+        // The WinUI host has no bitmap image realization yet (Image over a
+        // WriteableBitmap is the planned mapping); per the AGENTS contract
+        // it rejects the tree instead of substituting an unrelated control.
+        return Err(WinUiDiagnostic::UnsupportedElement {
+            window_id: window_id.to_owned(),
+            element: ElementKind::Image,
+        });
+    }
     for child in element.children() {
-        validate_element(child)?;
+        validate_content(window_id, child)?;
     }
     Ok(())
 }
@@ -266,6 +291,23 @@ mod tests {
             Err(WinUiDiagnostic::UnsupportedElementCapability {
                 kind: rinka_core::ElementKind::Canvas,
                 capability: "owned-drawing canvas surface",
+            })
+        );
+    }
+
+    #[test]
+    fn bitmap_image_content_is_a_typed_diagnostic() {
+        let content = rinka_core::ImageContent::from_rgba8(2, 2, 8, vec![0_u8; 32], 1);
+        let mut preview = window("main", WindowKind::Main);
+        preview.content =
+            WindowContent::from(rinka_core::column([rinka_core::image(content, "Preview")]));
+        let value = application(vec![preview]);
+
+        assert_eq!(
+            validate_application(&value),
+            Err(super::WinUiDiagnostic::UnsupportedElement {
+                window_id: "main".to_owned(),
+                element: rinka_core::ElementKind::Image,
             })
         );
     }

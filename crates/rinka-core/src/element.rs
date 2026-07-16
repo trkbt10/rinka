@@ -263,6 +263,15 @@ impl Element {
         self
     }
 
+    /// Sets an image's semantic scaling mode.
+    pub fn image_scaling(mut self, scaling: ImageScaling) -> Self {
+        match &mut self.props {
+            Props::Image { scaling: value, .. } => *value = scaling,
+            _ => panic!("image_scaling is valid only for an image"),
+        }
+        self
+    }
+
     /// Marks label text as selectable.
     pub fn selectable(mut self, selectable: bool) -> Self {
         match &mut self.props {
@@ -371,6 +380,18 @@ pub fn toggle(
 pub fn progress(fraction: f64, accessibility_label: impl Into<String>) -> Element {
     Element::leaf(Props::Progress {
         fraction: fraction.clamp(0.0, 1.0),
+        accessibility_label: accessibility_label.into(),
+    })
+}
+
+/// Creates a native bitmap image view from decoded RGBA content.
+///
+/// The picture fits its view proportionally by default; select another
+/// mapping with [`Element::image_scaling`].
+pub fn image(content: ImageContent, accessibility_label: impl Into<String>) -> Element {
+    Element::leaf(Props::Image {
+        content,
+        scaling: ImageScaling::Fit,
         accessibility_label: accessibility_label.into(),
     })
 }
@@ -512,5 +533,35 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn image_accepts_a_semantic_scaling_mode() {
+        let content = ImageContent::from_rgba8(2, 2, 8, vec![0_u8; 32], 1);
+        let element = image(content, "Preview").image_scaling(ImageScaling::Center);
+
+        assert!(matches!(
+            element.props(),
+            Props::Image {
+                scaling: ImageScaling::Center,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn image_content_identity_follows_geometry_density_and_revision() {
+        let same_picture_new_allocation = (
+            ImageContent::from_rgba8(2, 2, 8, vec![1_u8; 32], 9).with_scale(2.0),
+            ImageContent::from_rgba8(2, 2, 8, vec![1_u8; 32], 9).with_scale(2.0),
+        );
+        assert_eq!(same_picture_new_allocation.0, same_picture_new_allocation.1);
+
+        let base = ImageContent::from_rgba8(2, 2, 8, vec![1_u8; 32], 9);
+        assert_ne!(base, ImageContent::from_rgba8(2, 2, 8, vec![1_u8; 32], 10));
+        assert_ne!(
+            base,
+            ImageContent::from_rgba8(2, 2, 8, vec![1_u8; 32], 9).with_scale(2.0)
+        );
     }
 }

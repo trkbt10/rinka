@@ -2,12 +2,13 @@
 
 use rinka::{
     Align, ApplicationSpec, Axis, ButtonRole, CanvasColor, CanvasPoint, CanvasRect, CanvasSize,
-    CollectionPattern, Component, ControlSize, Dispatch, DrawScene, Element, Justify, LineWidth,
-    PanelBehavior, PointerEvent, PointerPhase, Size, SortDirection, Spacing, StatusTone, Symbol,
-    TableColumn, TableSort, TextRole, ToolbarAction, ToolbarChoice, ToolbarDisplay,
-    ToolbarGroupDisplay, ToolbarItem, ToolbarMenuEntry, ToolbarPlacement, UiPattern, WindowContent,
-    WindowId, WindowKind, WindowSpec, button, canvas, column, label, list, list_row, mount_pattern,
-    progress, row, separator, spacer, status, toggle,
+    CollectionPattern, Component, ControlSize, Dispatch, DrawScene, Element, ImageContent,
+    ImageScaling, Justify, LineWidth, PanelBehavior, PointerEvent, PointerPhase, Size,
+    SortDirection, Spacing, StatusTone, Symbol, TableColumn, TableSort, TextRole, ToolbarAction,
+    ToolbarChoice, ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem, ToolbarMenuEntry,
+    ToolbarPlacement, UiPattern, WindowContent, WindowId, WindowKind, WindowSpec, button, canvas,
+    column, image, label, list, list_row, mount_pattern, progress, row, separator, spacer, status,
+    toggle,
 };
 
 /// Meaningful UI state used by the consumer verification matrix.
@@ -128,14 +129,25 @@ struct ExplorerComponent {
     assets_expanded: bool,
     sort: TableSort,
     canvas_pointer: Option<PointerEvent>,
+    preview_bitmaps: Vec<(FileKey, ImageContent)>,
+    scaling_probe: ImageContent,
 }
 
 impl ExplorerComponent {
     fn new(scene: Scene) -> Self {
+        // Deterministic capture aid: preselecting the generated PNG preview
+        // lets the visual matrix photograph the inspector bitmap without
+        // synthetic input, following the RINKA_APPKIT_CONTENT_FIT_PROBE
+        // precedent.
+        let preselect_preview = std::env::var_os("RINKA_EXPLORER_SELECT_PREVIEW").is_some();
         Self {
             scene,
             location: Location::RemoteProject,
-            selected_file: (scene == Scene::Ready).then_some(FileKey::Cargo),
+            selected_file: (scene == Scene::Ready).then_some(if preselect_preview {
+                FileKey::Preview
+            } else {
+                FileKey::Cargo
+            }),
             show_hidden: false,
             favorites_expanded: true,
             locations_expanded: true,
@@ -146,8 +158,95 @@ impl ExplorerComponent {
                 direction: SortDirection::Ascending,
             },
             canvas_pointer: None,
+            // Generated once so every reconcile hands the runtime the same
+            // shared buffers under the same revision, exercising the
+            // "identical revision means no re-upload" contract.
+            preview_bitmaps: vec![
+                (FileKey::Preview, preview_bitmap(FileKey::Preview)),
+                (FileKey::AppIcon, preview_bitmap(FileKey::AppIcon)),
+            ],
+            scaling_probe: scaling_probe_bitmap(),
         }
     }
+
+    fn preview_content(&self, key: FileKey) -> Option<&ImageContent> {
+        self.preview_bitmaps
+            .iter()
+            .find_map(|(candidate, content)| (*candidate == key).then_some(content))
+    }
+}
+
+/// Pixel density of every generated preview bitmap: two pixels per point,
+/// proving the HiDPI mapping on a Retina display.
+const PREVIEW_BITMAP_SCALE: f64 = 2.0;
+
+/// Builds a deterministic preview picture for one image file: a per-file
+/// color gradient under a checker pattern, with straight-alpha transparent
+/// corners so the window background composites through.
+///
+/// The revision is a per-file constant because each file's generated
+/// picture never changes; switching files patches the mounted element with
+/// a different revision and geometry-identical buffers re-use the retained
+/// native image.
+fn preview_bitmap(key: FileKey) -> ImageContent {
+    let logical = 72_u32;
+    let side = (f64::from(logical) * PREVIEW_BITMAP_SCALE) as u32;
+    let stride = side * 4;
+    let (base, revision) = match key {
+        FileKey::AppIcon => ([0xC5_u8, 0x63, 0x2A], 2_u64),
+        _ => ([0x2E_u8, 0x6F, 0xC1], 1_u64),
+    };
+    let mut bytes = Vec::with_capacity((stride * side) as usize);
+    let center = f64::from(side) / 2.0;
+    for y in 0..side {
+        for x in 0..side {
+            let ramp = f64::from(x) / f64::from(side.max(1));
+            let checker = ((x / 16) + (y / 16)) % 2 == 0;
+            let lift = if checker { 0.18 } else { 0.0 };
+            let channel = |value: u8| {
+                let base = f64::from(value) / 255.0;
+                let mixed = base + (1.0 - base) * (ramp * 0.6 + lift);
+                (mixed * 255.0).round().clamp(0.0, 255.0) as u8
+            };
+            // Straight alpha: opaque center falling off to transparent
+            // corners, so compositing over the window background is visible.
+            let distance =
+                ((f64::from(x) - center).powi(2) + (f64::from(y) - center).powi(2)).sqrt() / center;
+            let alpha = ((1.35 - distance) * 255.0).round().clamp(0.0, 255.0) as u8;
+            bytes.extend_from_slice(&[channel(base[0]), channel(base[1]), channel(base[2]), alpha]);
+        }
+    }
+    ImageContent::from_rgba8(side, side, stride, bytes, revision).with_scale(PREVIEW_BITMAP_SCALE)
+}
+
+/// Builds the wide deterministic ribbon used to verify all four scaling
+/// modes: a horizontal hue ramp with fixed-size tick marks, wider than the
+/// inspector, so fit letterboxes, fill distorts, and actual versus center
+/// crop different regions.
+fn scaling_probe_bitmap() -> ImageContent {
+    let logical_width = 280_u32;
+    let logical_height = 40_u32;
+    let width = (f64::from(logical_width) * PREVIEW_BITMAP_SCALE) as u32;
+    let height = (f64::from(logical_height) * PREVIEW_BITMAP_SCALE) as u32;
+    let stride = width * 4;
+    let mut bytes = Vec::with_capacity((stride * height) as usize);
+    for y in 0..height {
+        for x in 0..width {
+            let ramp = f64::from(x) / f64::from(width.max(1));
+            let tick = x % 80 < 4 || y % 40 < 4;
+            let (red, green, blue) = if tick {
+                (0x20, 0x20, 0x20)
+            } else {
+                (
+                    (ramp * 255.0).round() as u8,
+                    0x60,
+                    ((1.0 - ramp) * 255.0).round() as u8,
+                )
+            };
+            bytes.extend_from_slice(&[red, green, blue, 0xFF]);
+        }
+    }
+    ImageContent::from_rgba8(width, height, stride, bytes, 3).with_scale(PREVIEW_BITMAP_SCALE)
 }
 
 enum ExplorerMessage {
@@ -951,7 +1050,7 @@ fn inspector(model: &ExplorerComponent) -> Element {
         Scene::Ready if model.selected_file.is_some() => {
             let record = file_record_for_key(model, model.selected_file.expect("selection exists"))
                 .expect("selected file must remain visible");
-            column([
+            let mut details = vec![
                 label(record.title)
                     .text_role(TextRole::Heading)
                     .with_key("inspector-name"),
@@ -964,6 +1063,42 @@ fn inspector(model: &ExplorerComponent) -> Element {
                 label(format!("Modified {}", record.modified))
                     .text_role(TextRole::Body)
                     .with_key("inspector-modified"),
+            ];
+            if let Some(content) = model.preview_content(record.key) {
+                details.push(
+                    label("Preview")
+                        .text_role(TextRole::Secondary)
+                        .with_key("inspector-preview-caption"),
+                );
+                details.push(
+                    image(
+                        content.clone(),
+                        format!("Bitmap preview of {}", record.title),
+                    )
+                    .with_key("inspector-preview"),
+                );
+                for (mode, name) in [
+                    (ImageScaling::Fit, "fit"),
+                    (ImageScaling::Fill, "fill"),
+                    (ImageScaling::Actual, "actual"),
+                    (ImageScaling::Center, "center"),
+                ] {
+                    details.push(
+                        label(format!("Scaling: {name}"))
+                            .text_role(TextRole::Secondary)
+                            .with_key(format!("inspector-scaling-{name}-caption")),
+                    );
+                    details.push(
+                        image(
+                            model.scaling_probe.clone(),
+                            format!("Scaling probe rendered with {name} mapping"),
+                        )
+                        .image_scaling(mode)
+                        .with_key(format!("inspector-scaling-{name}")),
+                    );
+                }
+            }
+            details.extend([
                 spacer(false, true).with_key("inspector-space"),
                 row([
                     button(
@@ -984,9 +1119,10 @@ fn inspector(model: &ExplorerComponent) -> Element {
                 ])
                 .align(Align::Center)
                 .with_key("inspector-actions"),
-            ])
-            .spacing(Spacing::Section)
-            .with_key("inspector-ready")
+            ]);
+            column(details)
+                .spacing(Spacing::Section)
+                .with_key("inspector-ready")
         }
         Scene::Ready => inspector_status(
             "No Selection",

@@ -1,5 +1,7 @@
 //! Platform-neutral semantic values and comparable native properties.
 
+use std::sync::Arc;
+
 /// Element category understood by native adapters.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ElementKind {
@@ -13,6 +15,8 @@ pub enum ElementKind {
     Toggle,
     /// Progress indicator.
     Progress,
+    /// Bitmap picture.
+    Image,
     /// Visual separator.
     Separator,
     /// Flexible space.
@@ -239,6 +243,174 @@ impl TableColumn {
     }
 }
 
+/// Semantic mapping from a bitmap picture to its native view bounds.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ImageScaling {
+    /// Scale preserving the aspect ratio so the whole picture fits inside
+    /// the view, leaving empty space on the unfilled axis.
+    Fit,
+    /// Scale each axis independently so the picture covers the view exactly,
+    /// distorting the aspect ratio when the shapes differ.
+    Fill,
+    /// Draw at the buffer's logical size anchored to the top leading corner,
+    /// cropping whatever exceeds the view.
+    Actual,
+    /// Draw at the buffer's logical size centered in the view, cropping
+    /// evenly on every overflowing edge.
+    Center,
+}
+
+/// Decoded RGBA bitmap content presented by an image element.
+///
+/// The buffer is row-major with a top-left origin, eight bits per channel in
+/// R, G, B, A order, straight (non-premultiplied) alpha, interpreted in the
+/// sRGB color space. `stride` counts the bytes between row starts and must
+/// cover at least `width * 4` bytes. Decoding stays on the consumer side;
+/// the core carries only pixels.
+///
+/// Reconciliation identifies pixel content by `revision`, never by comparing
+/// bytes: within one mounted element, a producer must supply a new revision
+/// whenever it supplies a different picture, and two buffers carrying the
+/// same revision and geometry are treated as the same picture so the
+/// retained native image is not rebuilt or re-uploaded.
+#[derive(Clone)]
+pub struct ImageContent {
+    width: u32,
+    height: u32,
+    stride: u32,
+    scale: f64,
+    revision: u64,
+    bytes: Arc<[u8]>,
+}
+
+impl ImageContent {
+    /// Wraps a decoded straight-alpha sRGB RGBA8 buffer at 1.0 pixel density.
+    pub fn from_rgba8(
+        width: u32,
+        height: u32,
+        stride: u32,
+        bytes: impl Into<Arc<[u8]>>,
+        revision: u64,
+    ) -> Self {
+        Self {
+            width,
+            height,
+            stride,
+            scale: 1.0,
+            revision,
+            bytes: bytes.into(),
+        }
+    }
+
+    /// Declares the buffer's pixel density in pixels per logical point.
+    ///
+    /// A buffer of 2.0 density renders at half its pixel extent in layout
+    /// points and stays crisp on a 2x display.
+    pub fn with_scale(mut self, scale: f64) -> Self {
+        self.scale = scale;
+        self
+    }
+
+    /// Returns the buffer width in pixels.
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Returns the buffer height in pixels.
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Returns the byte distance between row starts.
+    pub const fn stride(&self) -> u32 {
+        self.stride
+    }
+
+    /// Returns the pixel density in pixels per logical point.
+    pub const fn scale(&self) -> f64 {
+        self.scale
+    }
+
+    /// Returns the consumer-declared pixel-content identity.
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Returns the RGBA8 bytes.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Returns the layout width in logical points.
+    pub fn logical_width(&self) -> f64 {
+        f64::from(self.width) / self.scale
+    }
+
+    /// Returns the layout height in logical points.
+    pub fn logical_height(&self) -> f64 {
+        f64::from(self.height) / self.scale
+    }
+
+    pub(crate) fn validity_error(&self) -> Option<String> {
+        if self.width == 0 || self.height == 0 {
+            return Some(format!(
+                "image dimensions must be nonzero, received {}x{}",
+                self.width, self.height
+            ));
+        }
+        let row_bytes = u64::from(self.width) * 4;
+        if u64::from(self.stride) < row_bytes {
+            return Some(format!(
+                "stride {} does not cover the {} bytes of one {}-pixel row",
+                self.stride, row_bytes, self.width
+            ));
+        }
+        let required = u64::from(self.stride) * u64::from(self.height - 1) + row_bytes;
+        if (self.bytes.len() as u64) < required {
+            return Some(format!(
+                "buffer holds {} bytes but the declared geometry requires {required}",
+                self.bytes.len()
+            ));
+        }
+        if !self.scale.is_finite() || self.scale <= 0.0 {
+            return Some(format!(
+                "scale must be a positive finite pixel density, received {}",
+                self.scale
+            ));
+        }
+        None
+    }
+}
+
+impl PartialEq for ImageContent {
+    /// Compares picture identity: geometry, density, and revision.
+    ///
+    /// Bytes never participate, per the revision contract documented on
+    /// [`ImageContent`]; equal identity means reconciliation keeps the
+    /// retained native image.
+    fn eq(&self, other: &Self) -> bool {
+        self.width == other.width
+            && self.height == other.height
+            && self.stride == other.stride
+            && self.scale == other.scale
+            && self.revision == other.revision
+    }
+}
+
+impl std::fmt::Debug for ImageContent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ImageContent")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("stride", &self.stride)
+            .field("scale", &self.scale)
+            .field("revision", &self.revision)
+            .field("byte_len", &self.bytes.len())
+            .finish()
+    }
+}
+
 /// Semantic status presentation.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum StatusTone {
@@ -363,6 +535,15 @@ pub enum Props {
         /// Textual progress description.
         accessibility_label: String,
     },
+    /// Bitmap image properties.
+    Image {
+        /// Decoded RGBA pixel content.
+        content: ImageContent,
+        /// Mapping from the picture to the native view bounds.
+        scaling: ImageScaling,
+        /// Screen-reader description of the picture.
+        accessibility_label: String,
+    },
     /// Separator properties.
     Separator {
         /// Direction of the dividing line.
@@ -473,6 +654,10 @@ impl Props {
                 accessibility_label,
                 ..
             }
+            | Self::Image {
+                accessibility_label,
+                ..
+            }
             | Self::List {
                 accessibility_label,
                 ..
@@ -498,6 +683,7 @@ impl Props {
             Self::Input { .. } => ElementKind::Input,
             Self::Toggle { .. } => ElementKind::Toggle,
             Self::Progress { .. } => ElementKind::Progress,
+            Self::Image { .. } => ElementKind::Image,
             Self::Separator { .. } => ElementKind::Separator,
             Self::Spacer { .. } => ElementKind::Spacer,
             Self::Stack { .. } => ElementKind::Stack,

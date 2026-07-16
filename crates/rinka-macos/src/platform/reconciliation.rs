@@ -81,6 +81,13 @@ fn apply_patch(handle: &AppKitHandle, patch: &PropertyPatch) -> Result<(), AppKi
             }
             set_string(handle.view(), SET_ACCESSIBILITY_LABEL, accessibility_label);
         }
+        Props::Image {
+            content,
+            scaling,
+            accessibility_label,
+        } => {
+            apply_image(handle, content, *scaling, accessibility_label)?;
+        }
         Props::Separator { axis } => {
             // SAFETY: NSView autoresizing flags are a stable bitmask.
             unsafe {

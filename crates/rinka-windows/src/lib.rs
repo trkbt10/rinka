@@ -72,6 +72,15 @@ pub fn validate_element(element: &Element) -> Result<(), WindowsDiagnostic> {
             capability: "owned-drawing canvas surface",
         });
     }
+    if element.kind() == ElementKind::Image {
+        // The Win32 contract probe has no bitmap image realization yet; per
+        // the AGENTS contract it rejects the capability instead of
+        // substituting an unrelated control.
+        return Err(WindowsDiagnostic::UnsupportedCapability {
+            element: ElementKind::Image,
+            capability: "bitmap image element",
+        });
+    }
     Ok(())
 }
 
@@ -124,6 +133,19 @@ mod tests {
             Err(WindowsDiagnostic::UnsupportedCapability {
                 element: ElementKind::Canvas,
                 capability: "owned-drawing canvas surface",
+            })
+        );
+    }
+
+    #[test]
+    fn bitmap_image_content_is_a_typed_diagnostic() {
+        let content = rinka_core::ImageContent::from_rgba8(2, 2, 8, vec![0_u8; 32], 1);
+        let element = rinka_core::image(content, "Preview");
+        assert_eq!(
+            validate_element(&element),
+            Err(WindowsDiagnostic::UnsupportedCapability {
+                element: ElementKind::Image,
+                capability: "bitmap image element",
             })
         );
     }

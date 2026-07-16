@@ -22,8 +22,8 @@ pub use canvas::{
     LineWidth, MonospaceMetrics, PointerButton, PointerEvent, PointerModifiers, PointerPhase,
 };
 pub use element::{
-    Element, Key, button, canvas, column, input, label, list, list_row, mount_pattern, progress,
-    row, scroll, separator, spacer, status, toggle,
+    Element, Key, button, canvas, column, image, input, label, list, list_row, mount_pattern,
+    progress, row, scroll, separator, spacer, status, toggle,
 };
 pub use event::{
     ActivateHandler, EventBindings, InputHandler, PointerHandler, SortHandler, ToggleHandler,
@@ -34,8 +34,8 @@ pub use reconcile::{MountedNode, RenderError, RenderStats, Renderer};
 pub use runtime::{AppRuntime, Component, Dispatch, WindowRuntime};
 pub use semantics::{
     Align, Axis, ButtonMaterial, ButtonRole, CollectionPattern, ControlSize, ElementKind,
-    InputKind, Justify, ListRowRole, Props, SortDirection, Spacing, StatusTone, Symbol,
-    TableColumn, TableSort, TextRole,
+    ImageContent, ImageScaling, InputKind, Justify, ListRowRole, Props, SortDirection, Spacing,
+    StatusTone, Symbol, TableColumn, TableSort, TextRole,
 };
 pub use toolbar::{
     ToolbarAction, ToolbarChoice, ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem,

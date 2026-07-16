@@ -212,6 +212,22 @@ fn write_props(output: &mut String, props: &Props) {
             json(accessibility_label)
         )
         .unwrap(),
+        Props::Image {
+            content,
+            scaling,
+            accessibility_label,
+        } => write!(
+            output,
+            "{{\"width\":{},\"height\":{},\"stride\":{},\"scale\":{},\"revision\":{},\"scaling\":{},\"accessibilityLabel\":{}}}",
+            content.width(),
+            content.height(),
+            content.stride(),
+            content.scale(),
+            content.revision(),
+            json(&format!("{scaling:?}")),
+            json(accessibility_label)
+        )
+        .unwrap(),
         other => write!(output, "{}", json(&format!("{other:?}"))).unwrap(),
     }
 }

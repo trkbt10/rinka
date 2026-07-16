@@ -166,6 +166,12 @@ fn render_node(node: &MountedNode<ProjectedHandle>) -> ui::Element {
             // through first_unsupported_element before rendering.
             unreachable!("canvas elements are rejected before WinUI projection")
         }
+        // Unreachable for declared content: validate_application rejects the
+        // bitmap image capability with a typed diagnostic before projection.
+        // A state transition that introduces an image after startup lands
+        // here and projects nothing; the runtime rejection path is tracked
+        // by the image-display ticket as a WinUI follow-up.
+        Props::Image { .. } => ui::Element::Empty,
     }
 }
 
