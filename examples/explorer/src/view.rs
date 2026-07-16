@@ -4,15 +4,16 @@ use crate::editor::EditorState;
 use rinka::{
     Accelerator, Alert, Align, ApplicationSpec, Axis, ButtonRole, CanvasColor, CanvasPoint,
     CanvasRect, CanvasSize, ClipboardError, CollectionPattern, Component, ControlSize,
-    DialogButtonRole, DialogOutcome, Dispatch, DragPayload, DrawScene, Element, FileDrop,
-    FilePromise, ImageContent, ImageScaling, ImeEvent, InputKind, Justify, KeyChord, KeyEvent,
-    KeyIdentity, LineWidth, MenuBar, MenuBarEntry, MenuBarMenu, MenuBarMenuRole, MenuEntry,
-    MenuItem, OpenPanelDescription, PanelBehavior, PointerEvent, PointerPhase, PreeditCaret,
-    SavePanelDescription, Size, SortDirection, Spacing, StandardItem, StatusTone, Submenu, Symbol,
-    TableColumn, TableSort, TextChange, TextRole, TextSelection, ToolbarAction, ToolbarChoice,
-    ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem, ToolbarPlacement, UiPattern, UpdateContext,
-    WindowContent, WindowId, WindowKind, WindowSpec, button, canvas, column, image, input, label,
-    list, list_row, mount_pattern, progress, row, separator, spacer, status, text_area, toggle,
+    DialogButtonRole, DialogOutcome, Dispatch, DockEdge, DockEvent, DockGroup, DockLayout, DockTab,
+    DragPayload, DrawScene, Element, FileDrop, FilePromise, ImageContent, ImageScaling, ImeEvent,
+    InputKind, Justify, KeyChord, KeyEvent, KeyIdentity, LineWidth, MenuBar, MenuBarEntry,
+    MenuBarMenu, MenuBarMenuRole, MenuEntry, MenuItem, OpenPanelDescription, PanelBehavior,
+    PointerEvent, PointerPhase, PreeditCaret, SavePanelDescription, Size, SortDirection, Spacing,
+    StandardItem, StatusTone, Submenu, Symbol, TableColumn, TableSort, TextChange, TextRole,
+    TextSelection, ToolbarAction, ToolbarChoice, ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem,
+    ToolbarPlacement, UiPattern, UpdateContext, WindowContent, WindowId, WindowKind, WindowSpec,
+    button, canvas, column, dock, image, input, label, list, list_row, mount_pattern, progress,
+    row, separator, spacer, status, text_area, toggle,
 };
 use std::path::PathBuf;
 
@@ -31,6 +32,8 @@ pub enum Scene {
     Canvas,
     /// Native multi-line text editor over a real file.
     Editor,
+    /// Tabbed-document dock with user-rearrangeable splits.
+    Dock,
 }
 
 impl Scene {
@@ -43,6 +46,7 @@ impl Scene {
             Self::Error => "error",
             Self::Canvas => "canvas",
             Self::Editor => "editor",
+            Self::Dock => "dock",
         }
     }
 
@@ -55,12 +59,13 @@ impl Scene {
             "error" => Some(Self::Error),
             "canvas" => Some(Self::Canvas),
             "editor" => Some(Self::Editor),
+            "dock" => Some(Self::Dock),
             _ => None,
         }
     }
 
     /// Returns every required state in deterministic order.
-    pub const fn all() -> [Self; 6] {
+    pub const fn all() -> [Self; 7] {
         [
             Self::Ready,
             Self::Empty,
@@ -68,6 +73,7 @@ impl Scene {
             Self::Error,
             Self::Canvas,
             Self::Editor,
+            Self::Dock,
         ]
     }
 }
@@ -174,6 +180,10 @@ struct ExplorerComponent {
     favorite_files: Vec<FileKey>,
     last_file_action: Option<String>,
     editor: EditorState,
+    dock_layout: DockLayout,
+    dock_saved: Option<String>,
+    dock_note: Option<String>,
+    dock_next_group: u32,
 }
 
 impl ExplorerComponent {
@@ -223,6 +233,10 @@ impl ExplorerComponent {
             favorite_files: Vec::new(),
             last_file_action: None,
             editor: EditorState::load(),
+            dock_layout: initial_dock_layout(),
+            dock_saved: None,
+            dock_note: None,
+            dock_next_group: 0,
         }
     }
 
@@ -231,6 +245,95 @@ impl ExplorerComponent {
             .iter()
             .find_map(|(candidate, content)| (*candidate == key).then_some(content))
     }
+
+    /// Applies one semantic dock request from a native gesture. Every
+    /// mutation goes through the layout's standard semantics; a dirty tab's
+    /// close is vetoed pending an explicit dialog answer.
+    fn apply_dock_event(&mut self, event: DockEvent, context: &UpdateContext<ExplorerMessage>) {
+        match event {
+            DockEvent::SelectTab { tab, .. } => {
+                self.dock_layout.select_tab(&tab);
+                self.dock_note = Some(format!("dock: selected {tab}"));
+            }
+            DockEvent::CloseTab { tab, .. } => {
+                if self.dock_layout.tab(&tab).is_some_and(|tab| tab.dirty) {
+                    let title = self
+                        .dock_layout
+                        .tab(&tab)
+                        .map(|tab| tab.title.clone())
+                        .unwrap_or_default();
+                    self.dock_note = Some(format!("dock: close requested for dirty {tab}"));
+                    context.dialogs().alert(
+                        Alert::new(
+                            format!("Close \u{201c}{title}\u{201d} without saving?"),
+                            "Unsaved changes will be lost.",
+                        )
+                        .button(
+                            "Cancel",
+                            DialogButtonRole::Cancel,
+                            ExplorerMessage::DockCloseCancelled,
+                        )
+                        .button(
+                            "Close",
+                            DialogButtonRole::Destructive,
+                            ExplorerMessage::DockCloseConfirmed(tab),
+                        )
+                        .default_button(0),
+                    );
+                } else {
+                    self.dock_layout.close_tab(&tab);
+                    self.dock_note = Some(format!("dock: closed {tab}"));
+                }
+            }
+            DockEvent::MoveTab {
+                tab,
+                to_group,
+                index,
+                ..
+            } => {
+                if self.dock_layout.move_tab(&tab, &to_group, index) {
+                    self.dock_note = Some(format!("dock: moved {tab} to {to_group}@{index}"));
+                }
+            }
+            DockEvent::SplitGroup {
+                tab,
+                target_group,
+                edge,
+                ..
+            } => {
+                self.dock_next_group += 1;
+                let new_group = format!("group-{}", self.dock_next_group);
+                if self
+                    .dock_layout
+                    .split_with_tab(&target_group, edge, &new_group, &tab)
+                {
+                    self.dock_note =
+                        Some(format!("dock: split {target_group} {edge:?} with {tab}"));
+                }
+            }
+        }
+    }
+}
+
+/// Stable tab id of the editor document in the dock scene.
+const DOCK_TAB_EDITOR: &str = "editor";
+/// Stable tab id of the canvas document in the dock scene.
+const DOCK_TAB_CANVAS: &str = "canvas";
+/// Stable tab id of the notes document in the dock scene.
+const DOCK_TAB_NOTES: &str = "notes";
+
+/// The dock scene's initial layout: one group hosting the editor scene
+/// content, the canvas scene content, and a dirty notes document.
+fn initial_dock_layout() -> DockLayout {
+    DockLayout::single_group(DockGroup::new(
+        "documents",
+        [
+            DockTab::new(DOCK_TAB_EDITOR, "view.rs"),
+            DockTab::new(DOCK_TAB_CANVAS, "Test Pattern"),
+            DockTab::new(DOCK_TAB_NOTES, "notes.md").dirty(true),
+        ],
+        DOCK_TAB_EDITOR,
+    ))
 }
 
 /// Pixel density of every generated preview bitmap: two pixels per point,
@@ -347,6 +450,15 @@ enum ExplorerMessage {
     FilesDropped(FileDrop),
     FileExported(Result<String, String>),
     MoveFileToLocation(Location, String),
+    Dock(DockEvent),
+    DockCloseConfirmed(String),
+    DockCloseCancelled,
+    DockSplitActive(DockEdge),
+    DockMarkActiveDirty,
+    DockSaveLayout,
+    DockRestoreLayout,
+    DockCloseOthers(String),
+    DockCloseToTheRight(String),
 }
 
 impl Component for ExplorerComponent {
@@ -552,7 +664,11 @@ impl Component for ExplorerComponent {
                     Err(error) => format!("Clipboard error: {error}"),
                 });
             }
-            ExplorerMessage::EditorChanged(change) => self.editor.apply_change(&change),
+            ExplorerMessage::EditorChanged(change) => {
+                self.editor.apply_change(&change);
+                // The dock's dirty indicator follows real editor edits.
+                self.dock_layout.set_dirty(DOCK_TAB_EDITOR, true);
+            }
             ExplorerMessage::EditorSelectionChanged(selection) => {
                 self.editor.store_selection(selection);
             }
@@ -606,7 +722,108 @@ impl Component for ExplorerComponent {
             ExplorerMessage::EditorSetReadOnly(read_only) => self.editor.set_read_only(read_only),
             ExplorerMessage::EditorJumpEnd => self.editor.jump_to_end(),
             ExplorerMessage::EditorRehighlight => self.editor.rehighlight_all(),
-            ExplorerMessage::EditorReload => self.editor.reload(),
+            ExplorerMessage::EditorReload => {
+                self.editor.reload();
+                self.dock_layout.set_dirty(DOCK_TAB_EDITOR, false);
+            }
+            ExplorerMessage::Dock(event) => self.apply_dock_event(event, context),
+            ExplorerMessage::DockCloseConfirmed(tab) => {
+                self.dock_layout.close_tab(&tab);
+                self.dock_note = Some(format!("dock: closed {tab}"));
+            }
+            ExplorerMessage::DockCloseCancelled => {
+                self.dock_note = Some("dock: close cancelled".to_owned());
+            }
+            ExplorerMessage::DockSplitActive(edge) => {
+                let Some((group_id, active)) = self
+                    .dock_layout
+                    .groups()
+                    .first()
+                    .map(|group| (group.id.clone(), group.active.clone()))
+                else {
+                    return;
+                };
+                self.dock_next_group += 1;
+                let new_group = format!("group-{}", self.dock_next_group);
+                if self
+                    .dock_layout
+                    .split_with_tab(&group_id, edge, &new_group, &active)
+                {
+                    self.dock_note = Some(format!("dock: split {group_id} with {active}"));
+                } else {
+                    self.dock_note = Some("dock: split refused".to_owned());
+                }
+            }
+            ExplorerMessage::DockMarkActiveDirty => {
+                let Some(active) = self
+                    .dock_layout
+                    .groups()
+                    .first()
+                    .map(|group| group.active.clone())
+                else {
+                    return;
+                };
+                let dirty = self.dock_layout.tab(&active).is_some_and(|tab| !tab.dirty);
+                self.dock_layout.set_dirty(&active, dirty);
+                self.dock_note = Some(format!("dock: {active} dirty={dirty}"));
+            }
+            ExplorerMessage::DockSaveLayout => {
+                let persisted = self.dock_layout.to_persisted();
+                self.dock_note = Some(format!("dock: saved layout ({} bytes)", persisted.len()));
+                self.dock_saved = Some(persisted);
+            }
+            ExplorerMessage::DockRestoreLayout => {
+                let Some(saved) = &self.dock_saved else {
+                    self.dock_note = Some("dock: nothing saved".to_owned());
+                    return;
+                };
+                match DockLayout::from_persisted(saved) {
+                    Ok(layout) => {
+                        self.dock_layout = layout;
+                        self.dock_note = Some("dock: restored layout".to_owned());
+                    }
+                    Err(reason) => {
+                        self.dock_note = Some(format!("dock: restore failed: {reason}"));
+                    }
+                }
+            }
+            ExplorerMessage::DockCloseOthers(tab) => {
+                let others: Vec<String> = self
+                    .dock_layout
+                    .group_of_tab(&tab)
+                    .map(|group| {
+                        group
+                            .tabs
+                            .iter()
+                            .filter(|candidate| candidate.id != tab)
+                            .map(|candidate| candidate.id.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                for other in others {
+                    self.dock_layout.close_tab(&other);
+                }
+                self.dock_note = Some(format!("dock: closed others of {tab}"));
+            }
+            ExplorerMessage::DockCloseToTheRight(tab) => {
+                let rightward: Vec<String> = self
+                    .dock_layout
+                    .group_of_tab(&tab)
+                    .map(|group| {
+                        group
+                            .tabs
+                            .iter()
+                            .skip_while(|candidate| candidate.id != tab)
+                            .skip(1)
+                            .map(|candidate| candidate.id.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                for other in rightward {
+                    self.dock_layout.close_tab(&other);
+                }
+                self.dock_note = Some(format!("dock: closed to the right of {tab}"));
+            }
         }
     }
 
@@ -1232,7 +1449,135 @@ fn scene_body(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) ->
         .with_key("directory-error-stack"),
         Scene::Canvas => canvas_pane(model, dispatch),
         Scene::Editor => editor_pane(model, dispatch),
+        Scene::Dock => dock_pane(model, dispatch),
     }
+}
+
+/// The tabbed-document dock scene: the editor and canvas scene contents plus
+/// a notes document hosted as dock tabs, with explicit split, dirty, and
+/// persistence commands so every capability is drivable without a drag.
+fn dock_pane(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) -> Element {
+    let contents: Vec<Element> = model
+        .dock_layout
+        .tabs()
+        .into_iter()
+        .map(|tab| match tab.id.as_str() {
+            DOCK_TAB_EDITOR => editor_pane(model, dispatch.clone()).with_key(DOCK_TAB_EDITOR),
+            DOCK_TAB_CANVAS => canvas_pane(model, dispatch.clone()).with_key(DOCK_TAB_CANVAS),
+            _ => notes_pane().with_key(tab.id.clone()),
+        })
+        .collect();
+    let handler = dispatch.clone();
+    let mut area = dock(
+        model.dock_layout.clone(),
+        "Documents",
+        contents,
+        move |event| handler.emit(ExplorerMessage::Dock(event)),
+    )
+    .with_key("dock-area");
+    for tab in model.dock_layout.tabs() {
+        let others = dispatch.clone();
+        let rightward = dispatch.clone();
+        let other_tab = tab.id.clone();
+        let right_tab = tab.id.clone();
+        area = area.dock_tab_menu(
+            tab.id.clone(),
+            [
+                MenuEntry::item(MenuItem::new("close-others", "Close Others", move || {
+                    others.emit(ExplorerMessage::DockCloseOthers(other_tab.clone()));
+                })),
+                MenuEntry::item(MenuItem::new(
+                    "close-right",
+                    "Close to the Right",
+                    move || {
+                        rightward.emit(ExplorerMessage::DockCloseToTheRight(right_tab.clone()));
+                    },
+                )),
+            ],
+        );
+    }
+    let split_right = dispatch.clone();
+    let split_down = dispatch.clone();
+    let mark_dirty = dispatch.clone();
+    let save = dispatch.clone();
+    let restore = dispatch.clone();
+    column([
+        row([
+            button(
+                "Split Right",
+                "Split the active tab to the right",
+                move || {
+                    split_right.emit(ExplorerMessage::DockSplitActive(DockEdge::Trailing));
+                },
+            )
+            .control_size(ControlSize::Small)
+            .with_key("dock-split-right"),
+            button("Split Down", "Split the active tab downward", move || {
+                split_down.emit(ExplorerMessage::DockSplitActive(DockEdge::Bottom));
+            })
+            .control_size(ControlSize::Small)
+            .with_key("dock-split-down"),
+            button(
+                "Mark Dirty",
+                "Toggle the active tab's unsaved indicator",
+                move || mark_dirty.emit(ExplorerMessage::DockMarkActiveDirty),
+            )
+            .control_size(ControlSize::Small)
+            .with_key("dock-mark-dirty"),
+            button("Save Layout", "Serialize the dock layout", move || {
+                save.emit(ExplorerMessage::DockSaveLayout);
+            })
+            .control_size(ControlSize::Small)
+            .with_key("dock-save-layout"),
+            button(
+                "Restore Layout",
+                "Restore the saved dock layout",
+                move || {
+                    restore.emit(ExplorerMessage::DockRestoreLayout);
+                },
+            )
+            .control_size(ControlSize::Small)
+            .with_key("dock-restore-layout"),
+            spacer(true, false).with_key("dock-toolbar-space"),
+            label(
+                model
+                    .dock_note
+                    .clone()
+                    .unwrap_or_else(|| "dock: ready".to_owned()),
+            )
+            .text_role(TextRole::Secondary)
+            .with_key("dock-note"),
+        ])
+        .align(Align::Center)
+        .padding(Spacing::Content)
+        .with_key("dock-toolbar"),
+        area,
+    ])
+    .spacing(Spacing::Joined)
+    .with_key("dock-pane")
+}
+
+/// The notes document: static native text content standing in for a third
+/// open file.
+fn notes_pane() -> Element {
+    column([
+        label("notes.md")
+            .text_role(TextRole::Heading)
+            .with_key("notes-title"),
+        label("- verify tab drag between groups")
+            .text_role(TextRole::Monospace)
+            .with_key("notes-line-1"),
+        label("- verify edge-drop splits")
+            .text_role(TextRole::Monospace)
+            .with_key("notes-line-2"),
+        label("- verify close-last collapses")
+            .text_role(TextRole::Monospace)
+            .with_key("notes-line-3"),
+        spacer(false, true).with_key("notes-space"),
+    ])
+    .spacing(Spacing::Related)
+    .padding(Spacing::Content)
+    .with_key("notes-pane")
 }
 
 /// The native multi-line editor over a real file: monospace text area with
@@ -2141,6 +2486,11 @@ fn inspector(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) -> 
             "The editor pane is a native text view.",
             StatusTone::Informational,
         ),
+        Scene::Dock => inspector_status(
+            "Documents dock",
+            "Tabs and splits are native controls.",
+            StatusTone::Informational,
+        ),
     };
 
     column([
@@ -2217,12 +2567,17 @@ fn scene_summary(model: &ExplorerComponent) -> String {
         Scene::Error => "No items available".to_owned(),
         Scene::Canvas => "Deterministic canvas test pattern".to_owned(),
         Scene::Editor => format!("Editing {}", model.editor.file_name()),
+        Scene::Dock => format!(
+            "{} tabs \u{b7} {} groups",
+            model.dock_layout.tabs().len(),
+            model.dock_layout.groups().len()
+        ),
     }
 }
 
 const fn connection_status(scene: Scene) -> &'static str {
     match scene {
-        Scene::Ready | Scene::Empty | Scene::Busy | Scene::Canvas | Scene::Editor => {
+        Scene::Ready | Scene::Empty | Scene::Busy | Scene::Canvas | Scene::Editor | Scene::Dock => {
             "Connected securely"
         }
         Scene::Error => "Connection interrupted",
@@ -2514,6 +2869,53 @@ mod tests {
             let backend = renderer.backend();
             assert!(backend.find_by_key("file-Cargo").is_none());
             assert!(backend.find_by_key("inspector-state").is_some());
+        });
+        assert!(runtime.take_error().is_none());
+    }
+
+    #[test]
+    fn the_dock_scene_round_trips_a_dirty_close_through_the_dialog() {
+        use rinka::DockEvent;
+        let presenter = FakeDialogPresenter::new();
+        let runtime = WindowRuntime::mount(
+            Renderer::new(HeadlessBackend::new()),
+            WindowContent::component(ExplorerComponent::new(Scene::Dock)),
+            PlatformServices::default().with_dialog_service(presenter.clone()),
+        )
+        .expect("initial mount");
+        let (dock, events) = runtime.with_renderer(|renderer| {
+            let backend = renderer.backend();
+            let dock = backend
+                .find_by_key("dock-area")
+                .expect("the dock scene mounts the dock");
+            (dock, backend.events_of(dock).expect("dock has events"))
+        });
+        runtime.with_renderer(|renderer| {
+            let layout = renderer
+                .backend()
+                .dock_layout_of(dock)
+                .expect("dock layout realized");
+            assert_eq!(layout.tab_ids(), ["editor", "canvas", "notes"]);
+        });
+
+        // The dirty notes tab closes only through the dialog round trip.
+        assert!(events.emit_dock(DockEvent::CloseTab {
+            group: "documents".to_owned(),
+            tab: "notes".to_owned(),
+        }));
+        assert_eq!(presenter.presented_count(), 1);
+        let Some(DialogDescription::Alert(alert)) = presenter.description(0) else {
+            panic!("expected a close confirmation");
+        };
+        assert_eq!(alert.buttons[0].role, DialogButtonRole::Cancel);
+        assert_eq!(alert.default_button, Some(0));
+        assert!(presenter.deliver(0, DialogOutcome::ButtonChosen(1)));
+        runtime.with_renderer(|renderer| {
+            let layout = renderer
+                .backend()
+                .dock_layout_of(dock)
+                .expect("dock layout realized");
+            assert_eq!(layout.tab_ids(), ["editor", "canvas"]);
         });
         assert!(runtime.take_error().is_none());
     }

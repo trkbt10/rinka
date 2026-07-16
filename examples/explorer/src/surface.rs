@@ -390,6 +390,16 @@ fn write_props(output: &mut String, props: &Props) {
             json(accessibility_label)
         )
         .unwrap(),
+        Props::Dock {
+            layout,
+            accessibility_label,
+        } => write!(
+            output,
+            "{{\"layout\":{},\"accessibilityLabel\":{}}}",
+            json(&layout.to_persisted()),
+            json(accessibility_label)
+        )
+        .unwrap(),
         other => write!(output, "{}", json(&format!("{other:?}"))).unwrap(),
     }
 }
@@ -426,13 +436,16 @@ mod tests {
     #[test]
     fn extraction_contains_every_scene_and_accessible_label() {
         let output = extract_all_scenes();
-        for scene in ["ready", "empty", "busy", "error", "canvas", "editor"] {
+        for scene in [
+            "ready", "empty", "busy", "error", "canvas", "editor", "dock",
+        ] {
             assert!(output.contains(&format!("\"id\":\"{scene}\"")));
         }
         assert!(output.contains("accessibilityLabel"));
         assert!(output.contains("Connection Activity"));
         assert!(output.contains("Canvas test pattern"));
         assert!(output.contains("Editor for view.rs"));
+        assert!(output.contains("rinka-dock-v1:"));
     }
 
     #[test]
