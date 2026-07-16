@@ -6,13 +6,13 @@ use rinka::{
     CanvasRect, CanvasSize, ClipboardError, CollectionPattern, Component, ControlSize,
     DialogButtonRole, DialogOutcome, Dispatch, DragPayload, DrawScene, Element, FileDrop,
     FilePromise, ImageContent, ImageScaling, ImeEvent, Justify, KeyChord, KeyEvent, KeyIdentity,
-    LineWidth, MenuBar, MenuEntry, MenuItem, OpenPanelDescription, PanelBehavior, PointerEvent,
-    PointerPhase, PreeditCaret, SavePanelDescription, Size, SortDirection, Spacing, StatusTone,
-    Submenu, Symbol, TableColumn, TableSort, TextChange, TextRole, TextSelection, ToolbarAction,
-    ToolbarChoice, ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem, ToolbarPlacement, UiPattern,
-    UpdateContext, WindowContent, WindowId, WindowKind, WindowSpec, button, canvas, column, image,
-    label, list, list_row, mount_pattern, progress, row, separator, spacer, status, text_area,
-    toggle,
+    LineWidth, MenuBar, MenuBarEntry, MenuBarMenu, MenuBarMenuRole, MenuEntry, MenuItem,
+    OpenPanelDescription, PanelBehavior, PointerEvent, PointerPhase, PreeditCaret,
+    SavePanelDescription, Size, SortDirection, Spacing, StandardItem, StatusTone, Submenu, Symbol,
+    TableColumn, TableSort, TextChange, TextRole, TextSelection, ToolbarAction, ToolbarChoice,
+    ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem, ToolbarPlacement, UiPattern, UpdateContext,
+    WindowContent, WindowId, WindowKind, WindowSpec, button, canvas, column, image, label, list,
+    list_row, mount_pattern, progress, row, separator, spacer, status, text_area, toggle,
 };
 use std::path::PathBuf;
 
@@ -311,6 +311,8 @@ enum ExplorerMessage {
     SelectFile(FileKey),
     SetScene(Scene),
     SetShowHidden(bool),
+    NewFolder,
+    ShowHelp,
     SetSort(TableSort),
     SetSectionExpanded(&'static str, bool),
     SetFileExpanded(FileKey, bool),
@@ -367,6 +369,13 @@ impl Component for ExplorerComponent {
                 if !value && self.selected_file == Some(FileKey::HiddenEnvironment) {
                     self.selected_file = None;
                 }
+            }
+            ExplorerMessage::NewFolder => {
+                self.last_file_action =
+                    Some(format!("New Folder created in {}", self.location.title()));
+            }
+            ExplorerMessage::ShowHelp => {
+                self.last_file_action = Some("Rinka Explorer Help requested".to_owned());
             }
             ExplorerMessage::SetSort(sort) => self.sort = sort,
             ExplorerMessage::SetSectionExpanded(section, expanded) => match section {
@@ -781,7 +790,7 @@ fn main_window(scene: Scene) -> WindowSpec {
 }
 
 fn explorer_content(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) -> Element {
-    mount_pattern(
+    let root = mount_pattern(
         UiPattern::NavigationWorkspace {
             sidebar_collapsible: true,
             inspector_collapsible: true,
@@ -793,11 +802,116 @@ fn explorer_content(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessag
         ],
     )
     .with_key("explorer-workspace")
-    .accelerators(explorer_accelerators(model, dispatch))
+    .accelerators(explorer_accelerators(model, dispatch.clone()));
+    // The menu bar is declared only where a host realizes it: the AppKit
+    // host installs it as NSApplication.mainMenu, while the GTK and WinUI
+    // hosts currently reject a declared bar with a typed diagnostic
+    // (`reports/app-menu-bar`).
+    if cfg!(target_os = "macos") {
+        root.menu_bar(explorer_menu_bar(model, dispatch))
+    } else {
+        root
+    }
 }
 
 fn shortcut(text: &'static str) -> KeyChord {
     text.parse().expect("explorer chords are canonical")
+}
+
+/// The explorer's application menu bar, reconciled with component state.
+///
+/// The scene switchers carry the same chords as the accelerator table below;
+/// those chords are menu-owned on macOS (the key monitor defers them to
+/// native menu dispatch), so each fires exactly once, through the menu.
+/// "Show Hidden Files" deliberately displays no chord: its Primary+Shift+H
+/// stays table-owned so it keeps the defer-to-typing policy a native menu
+/// key equivalent cannot express.
+fn explorer_menu_bar(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) -> MenuBar {
+    let new_folder = dispatch.clone();
+    let show_hidden = model.show_hidden;
+    let hidden = dispatch.clone();
+    let help = dispatch.clone();
+    let scene_item = |id: &'static str, label: &'static str, scene: Scene, chord| {
+        let switch = dispatch.clone();
+        let mut item = MenuItem::new(id, label, move || {
+            switch.emit(ExplorerMessage::SetScene(scene));
+        })
+        .help(format!("Show the {label} scene"))
+        .checked(model.scene == scene);
+        if let Some(chord) = chord {
+            item = item.chord(shortcut(chord));
+        }
+        MenuBarEntry::item(item)
+    };
+    MenuBar::new([
+        MenuBarMenu::new(
+            "file",
+            "File",
+            [
+                MenuBarEntry::item(
+                    MenuItem::new("file-new-folder", "New Folder", move || {
+                        new_folder.emit(ExplorerMessage::NewFolder);
+                    })
+                    .help("Create a folder in the current location")
+                    // Folders can only be created while the listing is live.
+                    .enabled(model.scene == Scene::Ready)
+                    .chord(shortcut("Primary+N")),
+                ),
+                MenuBarEntry::separator(),
+                MenuBarEntry::standard(StandardItem::CloseWindow),
+            ],
+        ),
+        MenuBarMenu::new(
+            "edit",
+            "Edit",
+            [
+                MenuBarEntry::standard(StandardItem::Undo),
+                MenuBarEntry::standard(StandardItem::Redo),
+                MenuBarEntry::separator(),
+                MenuBarEntry::standard(StandardItem::Cut),
+                MenuBarEntry::standard(StandardItem::Copy),
+                MenuBarEntry::standard(StandardItem::Paste),
+                MenuBarEntry::separator(),
+                MenuBarEntry::standard(StandardItem::SelectAll),
+            ],
+        ),
+        MenuBarMenu::new(
+            "view",
+            "View",
+            [
+                scene_item("view-scene-ready", "Ready", Scene::Ready, Some("Primary+1")),
+                scene_item("view-scene-empty", "Empty", Scene::Empty, Some("Primary+2")),
+                scene_item("view-scene-busy", "Busy", Scene::Busy, None),
+                scene_item("view-scene-error", "Error", Scene::Error, Some("Primary+3")),
+                scene_item("view-scene-canvas", "Canvas", Scene::Canvas, None),
+                MenuBarEntry::separator(),
+                MenuBarEntry::item(
+                    MenuItem::new("view-show-hidden", "Show Hidden Files", move || {
+                        hidden.emit(ExplorerMessage::SetShowHidden(!show_hidden));
+                    })
+                    .help("Show files whose names begin with a dot")
+                    .checked(show_hidden),
+                ),
+            ],
+        ),
+        MenuBarMenu::new(
+            "window",
+            "Window",
+            [MenuBarEntry::standard(StandardItem::Minimize)],
+        )
+        .role(MenuBarMenuRole::Window),
+        MenuBarMenu::new(
+            "help",
+            "Help",
+            [MenuBarEntry::item(
+                MenuItem::new("help-explorer", "Rinka Explorer Help", move || {
+                    help.emit(ExplorerMessage::ShowHelp);
+                })
+                .help("Show the explorer help"),
+            )],
+        )
+        .role(MenuBarMenuRole::Help),
+    ])
 }
 
 /// The explorer's keyboard shortcuts, reconciled with the component state.
@@ -819,8 +933,12 @@ fn explorer_accelerators(
     let hidden = dispatch.clone();
     let show_hidden = model.show_hidden;
     vec![
-        // Returning to the primary listing is deliberately global: it works
-        // even while the search field owns typing focus.
+        // The three scene chords are also declared on the View menu items,
+        // which own them on macOS: the key monitor defers a menu-claimed
+        // chord to native menu dispatch, so these entries are shadowed there
+        // (their global/withhold flags included) and each chord fires exactly
+        // once, through the menu. The entries stay declared as the delivery
+        // path for hosts without a realized menu bar.
         Accelerator::new("scene-ready", shortcut("Primary+1"), move || {
             ready.emit(ExplorerMessage::SetScene(Scene::Ready));
         })
@@ -831,6 +949,9 @@ fn explorer_accelerators(
         Accelerator::new("scene-error", shortcut("Primary+3"), move || {
             error.emit(ExplorerMessage::SetScene(Scene::Error));
         }),
+        // Deliberately without a menu-item chord: the defer-to-typing policy
+        // below is owned by the accelerator table, which a native menu key
+        // equivalent (always firing over text input) cannot express.
         Accelerator::new("toggle-hidden", shortcut("Primary+Shift+H"), move || {
             hidden.emit(ExplorerMessage::SetShowHidden(!show_hidden));
         }),
@@ -2207,6 +2328,41 @@ mod tests {
         assert_eq!(
             component.clipboard_note.as_deref(),
             Some("Clipboard has no text")
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_main_window_declares_the_menu_bar_reconciled_with_scene_state() {
+        use rinka::MenuBarMenuRole;
+
+        let ready = application(Scene::Ready);
+        // The live bar is the main window's declaration; the application
+        // slot stays empty so the router falls back to the main window.
+        assert!(ready.menu_bar.is_empty());
+        let snapshot = ready.windows[0].content.snapshot();
+        let bar = snapshot.menu_bar_model().expect("declared menu bar");
+        let labels: Vec<&str> = bar.menus.iter().map(|menu| menu.label.as_str()).collect();
+        assert_eq!(labels, ["File", "Edit", "View", "Window", "Help"]);
+        assert_eq!(bar.menus[3].role, MenuBarMenuRole::Window);
+        assert_eq!(bar.menus[4].role, MenuBarMenuRole::Help);
+        assert!(bar.find_item("file-new-folder").expect("declared").enabled);
+        assert!(bar.find_item("view-scene-ready").expect("declared").checked);
+        assert!(!bar.find_item("view-scene-empty").expect("declared").checked);
+
+        let error_snapshot = application(Scene::Error).windows[0].content.snapshot();
+        let error_bar = error_snapshot.menu_bar_model().expect("declared menu bar");
+        assert!(
+            !error_bar
+                .find_item("file-new-folder")
+                .expect("declared")
+                .enabled
+        );
+        assert!(
+            error_bar
+                .find_item("view-scene-error")
+                .expect("declared")
+                .checked
         );
     }
 

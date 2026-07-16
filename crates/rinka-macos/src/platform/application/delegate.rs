@@ -42,6 +42,7 @@ impl ApplicationDelegate {
             text_area_probe: RefCell::new(None),
             dialog_probe: RefCell::new(None),
             text_input_probe: RefCell::new(None),
+            menu_bar_probe: RefCell::new(None),
         });
         // SAFETY: NSObject's init signature and ownership convention are stable.
         unsafe { msg_send![super(object), init] }
@@ -725,8 +726,12 @@ impl ApplicationDelegate {
 
     /// Returns whether the primary window is key, re-requesting activation
     /// otherwise. Cargo-launched diagnostics can lose activation to other
-    /// processes starting concurrently; window-scoped chords require key
-    /// status, so the probe never posts before it is established.
+    /// processes starting concurrently; window-scoped chords and menu key
+    /// equivalents require key status, so the probes never post before it is
+    /// established. Cooperative activation refuses a plain `activate` from a
+    /// background-launched process while the user's application is frontmost,
+    /// so the probe escalates to the ignoring-other-apps request — confined
+    /// to diagnostic runs, which own the desktop for their bounded duration.
     fn probe_window_is_key(&self) -> bool {
         let Some(window) = self.ivars().windows.borrow().first().cloned() else {
             return false;
@@ -738,10 +743,17 @@ impl ApplicationDelegate {
                 msg_send![objc2::class!(NSApplication), sharedApplication];
             let active: bool = msg_send![application, isActive];
             let key: *mut AnyObject = msg_send![application, keyWindow];
+            if std::env::var_os("RINKA_APPKIT_PROBE_DEBUG").is_some() {
+                eprintln!(
+                    "Rinka probe debug active={active} key={key:?} window={:?}",
+                    window.as_ptr()
+                );
+            }
             if active && key == window.as_ptr() {
                 return true;
             }
             let _: () = msg_send![application, activate];
+            let _: () = msg_send![application, activateIgnoringOtherApps: true];
             let _: () = msg_send![window.as_object(),
                 makeKeyAndOrderFront: std::ptr::null::<AnyObject>()
             ];
@@ -877,6 +889,52 @@ impl ApplicationDelegate {
         }
     }
 
+    /// Returns whether the hidden `.env` row is currently mounted, the
+    /// observable effect of the toggle-hidden accelerator.
+    fn probe_hidden_file_visible(&self) -> bool {
+        let renderers = self.ivars().renderers.borrow();
+        renderers.first().is_some_and(|runtime| {
+            runtime.with_renderer(|renderer| {
+                renderer.mounted().is_some_and(|root| {
+                    mounted_handle_for_key(root, "file-HiddenEnvironment").is_some()
+                })
+            })
+        })
+    }
+
+    /// Waits until the hidden-row visibility matches, retrying across
+    /// main-loop turns; `Some(true)` reports the settled match, `Some(false)`
+    /// the timeout, and `None` requests another turn.
+    fn await_probe_hidden_file(&self, step: &'static str, expected: bool) -> Option<bool> {
+        const MAX_MAIN_LOOP_TURNS: usize = 200;
+        let observed = self.probe_hidden_file_visible();
+        if observed == expected {
+            eprintln!(
+                "Rinka accelerator probe step={step} expected_hidden_visible={expected} observed_hidden_visible={observed} pass=true"
+            );
+            if let Some(probe) = self.ivars().accelerator_probe.borrow_mut().as_mut() {
+                probe.attempts = 0;
+            }
+            return Some(true);
+        }
+        let attempts = {
+            let mut probe = self.ivars().accelerator_probe.borrow_mut();
+            let probe = probe.as_mut()?;
+            probe.attempts += 1;
+            probe.attempts
+        };
+        if attempts < MAX_MAIN_LOOP_TURNS {
+            return None;
+        }
+        eprintln!(
+            "Rinka accelerator probe step={step} expected_hidden_visible={expected} observed_hidden_visible={observed} pass=false"
+        );
+        if let Some(probe) = self.ivars().accelerator_probe.borrow_mut().as_mut() {
+            probe.passed = false;
+        }
+        Some(false)
+    }
+
     /// Reads the key equivalent of the toolbar menu action titled `Name`.
     fn probe_menu_key_equivalent(&self) -> Option<(String, usize)> {
         let window = self.ivars().windows.borrow().first().cloned()?;
@@ -937,7 +995,9 @@ impl ApplicationDelegate {
         };
         match step {
             0 => {
-                // Establish key status before the first window-scoped chord.
+                // Establish key status before the first chord: menu key
+                // equivalents and window-scoped table entries both require
+                // an active application.
                 if !self.probe_window_is_key() {
                     if attempts >= MAX_ACTIVATION_TURNS {
                         self.fail_accelerator_probe_step("initial_scene", "activation_timeout");
@@ -957,11 +1017,14 @@ impl ApplicationDelegate {
                 eprintln!(
                     "Rinka accelerator probe step=initial_scene expected_scene=ready observed_scene=ready pass=true"
                 );
-                // Primary+2 switches the explorer to the empty scene.
+                // Primary+2 is declared on both the View menu item and the
+                // accelerator table; the menu owns it. The monitor logs the
+                // deferral and native menu dispatch switches the scene —
+                // exactly once, asserted from the activation log.
                 self.post_probe_chord("2", 19, NS_EVENT_MODIFIER_COMMAND);
                 advance(0);
             }
-            1 => match self.await_probe_scene("chord_dispatch", "empty") {
+            1 => match self.await_probe_scene("menu_chord_dispatch", "empty") {
                 None => self.schedule_accelerator_probe(),
                 Some(false) => self.finish_accelerator_probe(),
                 Some(true) => {
@@ -975,15 +1038,14 @@ impl ApplicationDelegate {
                         self.finish_accelerator_probe();
                         return;
                     }
-                    // Primary+1 is declared global and must fire over the
-                    // focused field; the monitor swallows it, so the field
-                    // keeps its editing session. The routed outcome is
-                    // asserted from the "Rinka accelerator event" log line.
+                    // Primary+1 is menu-owned too; native menu key
+                    // equivalents fire over focused text input, so the scene
+                    // must switch while the field owns typing.
                     self.post_probe_chord("1", 18, NS_EVENT_MODIFIER_COMMAND);
                     advance(0);
                 }
             },
-            2 => match self.await_probe_scene("global_over_text_input", "ready") {
+            2 => match self.await_probe_scene("menu_chord_over_text_input", "ready") {
                 None => self.schedule_accelerator_probe(),
                 Some(false) => self.finish_accelerator_probe(),
                 Some(true) => {
@@ -1000,19 +1062,23 @@ impl ApplicationDelegate {
                         self.finish_accelerator_probe();
                         return;
                     }
-                    // Primary+3 must be withheld while the search field is
-                    // key; the event falls through to the field editor, and
-                    // whatever AppKit does with the unhandled chord natively
-                    // is the field's own business.
-                    self.post_probe_chord("3", 20, NS_EVENT_MODIFIER_COMMAND);
+                    // Primary+Shift+H has no menu home, so the accelerator
+                    // table's defer-to-typing policy governs it: while the
+                    // search field is key the chord is withheld and the
+                    // event falls through to the field editor.
+                    self.post_probe_chord(
+                        "H",
+                        4,
+                        NS_EVENT_MODIFIER_COMMAND | NS_EVENT_MODIFIER_SHIFT,
+                    );
                     advance(0);
                 }
             },
             3 => {
-                // The withheld chord leaves no scene trace; give its event
-                // several turns to dispatch, then require the scene
-                // unchanged. Whether the field owned focus at dispatch time
-                // is asserted from the monitor's event log line.
+                // The withheld chord leaves no state trace; give its event
+                // several turns to dispatch, then require the hidden row
+                // still absent. Whether the field owned focus at dispatch
+                // time is asserted from the monitor's event log line.
                 if attempts < WITHHELD_QUIET_TURNS {
                     if let Some(probe) = self.ivars().accelerator_probe.borrow_mut().as_mut() {
                         probe.attempts += 1;
@@ -1020,11 +1086,12 @@ impl ApplicationDelegate {
                     self.schedule_accelerator_probe();
                     return;
                 }
-                let observed = self.observed_probe_scene();
-                let passed = observed == Some("ready");
+                let hidden_visible = self.probe_hidden_file_visible();
+                let scene = self.observed_probe_scene();
+                let passed = !hidden_visible && scene == Some("ready");
                 eprintln!(
-                    "Rinka accelerator probe step=text_field_precedence expected_scene=ready observed_scene={} pass={passed}",
-                    observed.unwrap_or("unknown")
+                    "Rinka accelerator probe step=text_field_precedence expected_hidden_visible=false observed_hidden_visible={hidden_visible} observed_scene={} pass={passed}",
+                    scene.unwrap_or("unknown")
                 );
                 if !passed {
                     if let Some(probe) = self.ivars().accelerator_probe.borrow_mut().as_mut() {
@@ -1035,10 +1102,14 @@ impl ApplicationDelegate {
                 }
                 self.unfocus_probe_text_input();
                 // With focus released the withheld chord fires again.
-                self.post_probe_chord("3", 20, NS_EVENT_MODIFIER_COMMAND);
+                self.post_probe_chord(
+                    "H",
+                    4,
+                    NS_EVENT_MODIFIER_COMMAND | NS_EVENT_MODIFIER_SHIFT,
+                );
                 advance(0);
             }
-            _ => match self.await_probe_scene("chord_after_unfocus", "error") {
+            _ => match self.await_probe_hidden_file("chord_after_unfocus", true) {
                 None => self.schedule_accelerator_probe(),
                 Some(false) => self.finish_accelerator_probe(),
                 Some(true) => {

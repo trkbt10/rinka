@@ -25,26 +25,46 @@ probe_once() {
   if ! RINKA_APPKIT_ACCELERATOR_PROBE=1 "$executable" --scene ready >"$log" 2>&1; then
     return 1
   fi
-  # Scene assertions come from the probe; the routing-soundness lines come
+  # State assertions come from the probe; the routing-soundness lines come
   # from the key monitor itself, proving each outcome was routed under the
-  # focus fact the policy claims (never vacuously).
+  # focus fact the policy claims (never vacuously). Menu-owned chords
+  # (Primary+1/2/3, declared on both the View menu and the accelerator
+  # table) are deferred by the monitor and dispatched natively through the
+  # menu; Primary+Shift+H has no menu home and keeps the table's
+  # defer-to-typing policy (reports/app-menu-bar).
   for line in \
     "probe step=initial_scene expected_scene=ready observed_scene=ready pass=true" \
-    "event chord=Primary+2 text_focus=false outcome=dispatched window=explorer-main id=scene-empty" \
-    "probe step=chord_dispatch expected_scene=empty observed_scene=empty pass=true" \
+    "event chord=Primary+2 text_focus=false outcome=menu-bar-claimed" \
+    "probe step=menu_chord_dispatch expected_scene=empty observed_scene=empty pass=true" \
     "probe step=focus_search_field pass=true" \
-    "event chord=Primary+1 text_focus=true outcome=dispatched window=explorer-main id=scene-ready" \
-    "probe step=global_over_text_input expected_scene=ready observed_scene=ready pass=true" \
+    "event chord=Primary+1 text_focus=true outcome=menu-bar-claimed" \
+    "probe step=menu_chord_over_text_input expected_scene=ready observed_scene=ready pass=true" \
     "probe step=refocus_search_field pass=true" \
-    "event chord=Primary+3 text_focus=true outcome=withheld window=explorer-main id=scene-error" \
-    "probe step=text_field_precedence expected_scene=ready observed_scene=ready pass=true" \
-    "event chord=Primary+3 text_focus=false outcome=dispatched window=explorer-main id=scene-error" \
-    "probe step=chord_after_unfocus expected_scene=error observed_scene=error pass=true" \
+    "event chord=Primary+Shift+H text_focus=true outcome=withheld window=explorer-main id=toggle-hidden" \
+    "probe step=text_field_precedence expected_hidden_visible=false observed_hidden_visible=false observed_scene=ready pass=true" \
+    "event chord=Primary+Shift+H text_focus=false outcome=dispatched window=explorer-main id=toggle-hidden" \
+    "probe step=chord_after_unfocus expected_hidden_visible=true observed_hidden_visible=true pass=true" \
     "probe step=menu_key_equivalent"; do
     if ! grep -q "Rinka accelerator $line" "$log"; then
       return 1
     fi
   done
+  # The menu owns the scene chords: each fires exactly once, through the
+  # native menu into the focused window's component, and never through the
+  # shadowed accelerator entry.
+  for line in \
+    "Rinka menu-bar activation item=view-scene-empty key_window=explorer-main outcome=dispatched window=explorer-main" \
+    "Rinka menu-bar activation item=view-scene-ready key_window=explorer-main outcome=dispatched window=explorer-main"; do
+    if ! grep -q "$line" "$log"; then
+      return 1
+    fi
+  done
+  if [ "$(grep -c 'Rinka menu-bar activation item=view-scene-empty' "$log")" -ne 1 ]; then
+    return 1
+  fi
+  if grep -q "outcome=dispatched window=explorer-main id=scene-empty" "$log"; then
+    return 1
+  fi
   grep -q "Rinka accelerator probe result=PASS" "$log"
 }
 

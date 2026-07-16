@@ -1,7 +1,7 @@
 //! Deterministic source-to-JSON extraction for blind structural review.
 
 use crate::view::{self, Scene};
-use rinka::{ApplicationSpec, Element, MenuEntry, Props, WindowKind};
+use rinka::{ApplicationSpec, Element, MenuBarEntry, MenuEntry, Props, WindowKind};
 use std::fmt::Write;
 
 /// Extracts all required states without interpreting or rewriting labels.
@@ -103,6 +103,25 @@ fn write_element(output: &mut String, element: &Element) {
         }
         output.push(']');
     }
+    if let Some(menu_bar) = element.menu_bar_model() {
+        output.push_str(",\"menuBar\":[");
+        for (index, menu) in menu_bar.menus.iter().enumerate() {
+            if index > 0 {
+                output.push(',');
+            }
+            write!(
+                output,
+                "{{\"id\":{},\"label\":{},\"role\":{},\"entries\":",
+                json(&menu.id),
+                json(&menu.label),
+                json(&format!("{:?}", menu.role)),
+            )
+            .unwrap();
+            write_menu_bar_entries(output, &menu.entries);
+            output.push('}');
+        }
+        output.push(']');
+    }
     output.push_str(",\"contextMenu\":");
     match element.context_menu_model() {
         Some(menu) => write_menu_entries(output, &menu.entries),
@@ -116,6 +135,52 @@ fn write_element(output: &mut String, element: &Element) {
         write_element(output, child);
     }
     output.push_str("]}");
+}
+
+fn write_menu_bar_entries(output: &mut String, entries: &[MenuBarEntry]) {
+    output.push('[');
+    for (index, entry) in entries.iter().enumerate() {
+        if index > 0 {
+            output.push(',');
+        }
+        match entry {
+            MenuBarEntry::Separator => output.push_str("{\"entry\":\"separator\"}"),
+            MenuBarEntry::Standard(standard) => write!(
+                output,
+                "{{\"entry\":\"standard\",\"id\":{},\"chord\":{}}}",
+                json(standard.id()),
+                standard
+                    .canonical_chord()
+                    .map_or_else(|| "null".to_owned(), |chord| json(&chord.to_string())),
+            )
+            .unwrap(),
+            MenuBarEntry::Item(item) => write!(
+                output,
+                "{{\"entry\":\"item\",\"id\":{},\"label\":{},\"help\":{},\"enabled\":{},\"checked\":{},\"chord\":{}}}",
+                json(&item.id),
+                json(&item.label),
+                json(&item.help),
+                item.enabled,
+                item.checked,
+                item.chord
+                    .map_or_else(|| "null".to_owned(), |chord| json(&chord.to_string())),
+            )
+            .unwrap(),
+            MenuBarEntry::Submenu(submenu) => {
+                write!(
+                    output,
+                    "{{\"entry\":\"submenu\",\"id\":{},\"label\":{},\"enabled\":{},\"entries\":",
+                    json(&submenu.id),
+                    json(&submenu.label),
+                    submenu.enabled,
+                )
+                .unwrap();
+                write_menu_entries(output, &submenu.entries);
+                output.push('}');
+            }
+        }
+    }
+    output.push(']');
 }
 
 fn write_menu_entries(output: &mut String, entries: &[MenuEntry]) {

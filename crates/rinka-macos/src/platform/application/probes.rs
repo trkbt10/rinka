@@ -21,6 +21,7 @@ struct ApplicationDelegateIvars {
     text_area_probe: RefCell<Option<TextAreaProbe>>,
     dialog_probe: RefCell<Option<DialogProbe>>,
     text_input_probe: RefCell<Option<TextInputProbe>>,
+    menu_bar_probe: RefCell<Option<MenuBarProbe>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -57,6 +58,16 @@ struct TextInputProbe {
 
 #[derive(Clone, Copy, Debug)]
 struct DialogProbe {
+    step: usize,
+    attempts: usize,
+    passed: bool,
+}
+
+/// In-process driver for the application menu bar evidence: structure,
+/// checkmark reconciliation, validation-gated key equivalents, the standard
+/// edit roles against a native field, and the native About/Quit/Close paths.
+#[derive(Clone, Copy, Debug)]
+struct MenuBarProbe {
     step: usize,
     attempts: usize,
     passed: bool,
@@ -367,6 +378,7 @@ define_class!(
             self.begin_dialog_probe();
             self.begin_drag_drop_probe();
             self.begin_text_input_probe();
+            self.begin_menu_bar_probe();
         }
 
         #[unsafe(method(runTransitionProbe:))]
@@ -402,6 +414,11 @@ define_class!(
         #[unsafe(method(runTextInputProbe:))]
         fn run_text_input_probe(&self, _sender: *mut AnyObject) {
             self.advance_text_input_probe();
+        }
+
+        #[unsafe(method(runMenuBarProbe:))]
+        fn run_menu_bar_probe(&self, _sender: *mut AnyObject) {
+            self.advance_menu_bar_probe();
         }
 
         #[unsafe(method(windowDidBecomeKey:))]

@@ -678,13 +678,20 @@ unsafe fn view_tree_contains_text(view: &AnyObject, text: &str) -> bool {
     false
 }
 
+/// Names the capture directory of whichever menu probe is running.
+fn probe_capture_directory() -> Option<String> {
+    std::env::var("RINKA_APPKIT_CONTEXT_MENU_PROBE_CAPTURE_DIR")
+        .or_else(|_| std::env::var("RINKA_APPKIT_MENU_BAR_PROBE_CAPTURE_DIR"))
+        .ok()
+}
+
 /// Writes PNG captures of every window this process owns, labeled per step.
 ///
 /// Self-capture through the window server does not require the
 /// screen-recording grant, so the probe can photograph the open menu window
 /// even in an unattended session.
 unsafe fn capture_step_windows(label: &str) {
-    let Ok(directory) = std::env::var("RINKA_APPKIT_CONTEXT_MENU_PROBE_CAPTURE_DIR") else {
+    let Some(directory) = probe_capture_directory() else {
         return;
     };
     // SAFETY: The window list and images describe only this process's own
