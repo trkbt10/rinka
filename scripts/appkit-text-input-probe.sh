@@ -50,6 +50,7 @@ probe_once() {
   fi
   for line in \
     "probe step=initial_scene observed_scene=canvas pass=true" \
+    "probe step=unfocus_canvas expected=\"focused=false\" pass=true" \
     "probe step=click_focus expected=\"focused=true\" pass=true" \
     "probe step=end_to_end_key path=" \
     "probe step=protocol_insert expected=\"echo:\" pass=true" \

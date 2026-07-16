@@ -1636,13 +1636,24 @@ impl ApplicationDelegate {
                 eprintln!(
                     "Rinka text-input probe step=initial_scene observed_scene=canvas pass=true"
                 );
-                if !self.click_probe_canvas() {
-                    self.fail_text_input_probe_step("click_focus", "canvas_not_mounted");
-                    return;
-                }
+                // The window's key-view loop assigns the input-accepting
+                // canvas as initial first responder on its own; release it
+                // so the click's focusing effect is proven in isolation.
+                self.unfocus_probe_text_input();
                 advance(0);
             }
-            1 => match self.await_input_caption("click_focus", "focused=true") {
+            1 => match self.await_input_caption("unfocus_canvas", "focused=false") {
+                None => self.schedule_text_input_probe(),
+                Some(false) => self.finish_text_input_probe(),
+                Some(true) => {
+                    if !self.click_probe_canvas() {
+                        self.fail_text_input_probe_step("click_focus", "canvas_not_mounted");
+                        return;
+                    }
+                    advance(0);
+                }
+            },
+            2 => match self.await_input_caption("click_focus", "focused=true") {
                 None => self.schedule_text_input_probe(),
                 Some(false) => self.finish_text_input_probe(),
                 Some(true) => {
@@ -1692,7 +1703,7 @@ impl ApplicationDelegate {
                     advance(0);
                 }
             },
-            2 => {
+            3 => {
                 const MAX_MAIN_LOOP_TURNS: usize = 200;
                 let caption = self.probe_input_caption().unwrap_or_default();
                 let raw_path = caption.contains("key=H");
@@ -1718,7 +1729,7 @@ impl ApplicationDelegate {
                 self.insert_probe_text("echo:");
                 advance(0);
             }
-            3 => match self.await_input_caption("protocol_insert", "echo:") {
+            4 => match self.await_input_caption("protocol_insert", "echo:") {
                 None => self.schedule_text_input_probe(),
                 Some(false) => self.finish_text_input_probe(),
                 Some(true) => {
@@ -1733,7 +1744,7 @@ impl ApplicationDelegate {
                     advance(0);
                 }
             },
-            4 => match self.await_input_caption("caret_rect_text", "wide") {
+            5 => match self.await_input_caption("caret_rect_text", "wide") {
                 None => self.schedule_text_input_probe(),
                 Some(false) => self.finish_text_input_probe(),
                 Some(true) => {
@@ -1784,7 +1795,7 @@ impl ApplicationDelegate {
                     advance(0);
                 }
             },
-            5 => match self.await_input_caption("raw_arrow_key", "key=Left") {
+            6 => match self.await_input_caption("raw_arrow_key", "key=Left") {
                 None => self.schedule_text_input_probe(),
                 Some(false) => self.finish_text_input_probe(),
                 Some(true) => {
@@ -1792,7 +1803,7 @@ impl ApplicationDelegate {
                     advance(0);
                 }
             },
-            6 => match self.await_input_caption("raw_control_chord", "key=Control+C") {
+            7 => match self.await_input_caption("raw_control_chord", "key=Control+C") {
                 None => self.schedule_text_input_probe(),
                 Some(false) => self.finish_text_input_probe(),
                 Some(true) => {
@@ -1800,7 +1811,7 @@ impl ApplicationDelegate {
                     advance(0);
                 }
             },
-            7 => match self.await_input_caption("raw_key_repeat", "key=Right repeat") {
+            8 => match self.await_input_caption("raw_key_repeat", "key=Right repeat") {
                 None => self.schedule_text_input_probe(),
                 Some(false) => self.finish_text_input_probe(),
                 Some(true) => {
@@ -1811,7 +1822,7 @@ impl ApplicationDelegate {
                     advance(0);
                 }
             },
-            8 => match self.await_input_caption("ime_preedit", "preedit=\"にほんご\"") {
+            9 => match self.await_input_caption("ime_preedit", "preedit=\"にほんご\"") {
                 None => self.schedule_text_input_probe(),
                 Some(false) => self.finish_text_input_probe(),
                 Some(true) => {
@@ -1819,7 +1830,7 @@ impl ApplicationDelegate {
                     advance(0);
                 }
             },
-            9 => match self.await_input_caption("ime_preedit_update", "preedit=\"にほん語\"") {
+            10 => match self.await_input_caption("ime_preedit_update", "preedit=\"にほん語\"") {
                 None => self.schedule_text_input_probe(),
                 Some(false) => self.finish_text_input_probe(),
                 Some(true) => {
@@ -1827,7 +1838,7 @@ impl ApplicationDelegate {
                     advance(0);
                 }
             },
-            10 => match self.await_input_caption("ime_commit", "日本語\" preedit=\"\"") {
+            11 => match self.await_input_caption("ime_commit", "日本語\" preedit=\"\"") {
                 None => self.schedule_text_input_probe(),
                 Some(false) => self.finish_text_input_probe(),
                 Some(true) => {
@@ -1835,7 +1846,7 @@ impl ApplicationDelegate {
                     advance(0);
                 }
             },
-            11 => match self.await_input_caption("ime_cancel_preedit", "preedit=\"かな\"") {
+            12 => match self.await_input_caption("ime_cancel_preedit", "preedit=\"かな\"") {
                 None => self.schedule_text_input_probe(),
                 Some(false) => self.finish_text_input_probe(),
                 Some(true) => {
@@ -1843,7 +1854,7 @@ impl ApplicationDelegate {
                     advance(0);
                 }
             },
-            12 => match self.await_input_caption("ime_cancel", "preedit=\"\"") {
+            13 => match self.await_input_caption("ime_cancel", "preedit=\"\"") {
                 None => self.schedule_text_input_probe(),
                 Some(false) => self.finish_text_input_probe(),
                 Some(true) => {
@@ -1870,7 +1881,7 @@ impl ApplicationDelegate {
                     advance(0);
                 }
             },
-            13 => {
+            14 => {
                 if attempts < WITHHELD_QUIET_TURNS {
                     retry();
                     return;
