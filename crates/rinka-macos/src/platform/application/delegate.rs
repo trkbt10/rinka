@@ -461,12 +461,18 @@ impl ApplicationDelegate {
         }
     }
 
-    /// Writes each retained window's content view into
-    /// `RINKA_APPKIT_WINDOW_CAPTURE_DIR` as `<prefix>window-<index>.png`.
+    /// Writes rendered evidence into `RINKA_APPKIT_WINDOW_CAPTURE_DIR`:
+    /// each retained window's content view as `<prefix>window-<index>.png`,
+    /// the element named by `RINKA_APPKIT_ELEMENT_CAPTURE` as
+    /// `<prefix>element-<key>.png`, and — when
+    /// `RINKA_APPKIT_VIEW_CAPTURE_KEYS` lists declarative keys — each keyed
+    /// mounted view as `<prefix>view-<key>.png`.
     ///
-    /// The capture renders the live view hierarchy into a backing-scale
-    /// bitmap through AppKit itself, so it needs no screen-recording
-    /// permission and records the real drawing output.
+    /// The render is in-process (`cacheDisplayInRect:toBitmapImageRep:` at
+    /// the backing scale), so it needs no screen-recording permission and
+    /// records the real drawing output. Vibrancy-backed surfaces (sidebar
+    /// and inspector panes) do not render faithfully offscreen; keyed view
+    /// captures target plain view subtrees, which do.
     fn capture_windows_to_directory(&self, prefix: &str) {
         let Some(directory) = std::env::var_os("RINKA_APPKIT_WINDOW_CAPTURE_DIR") else {
             return;
@@ -483,6 +489,47 @@ impl ApplicationDelegate {
             );
         }
         self.capture_element_to_directory(&directory, prefix);
+        self.capture_keyed_views_to_directory(&directory, prefix);
+    }
+
+    /// Writes each mounted view listed in `RINKA_APPKIT_VIEW_CAPTURE_KEYS`
+    /// (comma-separated declarative keys) into the capture directory as
+    /// `<prefix>view-<key>.png`.
+    ///
+    /// Keyed view captures exist because vibrancy-backed panes do not render
+    /// faithfully offscreen; a plain view subtree does, so evidence targets
+    /// the mounted element directly.
+    fn capture_keyed_views_to_directory(&self, directory: &std::path::Path, prefix: &str) {
+        let Some(keys) = std::env::var_os("RINKA_APPKIT_VIEW_CAPTURE_KEYS") else {
+            return;
+        };
+        let keys = keys
+            .into_string()
+            .unwrap_or_else(|_| panic!("RINKA_APPKIT_VIEW_CAPTURE_KEYS must be valid UTF-8"));
+        let renderers = self.ivars().renderers.borrow();
+        for key in keys.split(',').map(str::trim).filter(|key| !key.is_empty()) {
+            let captured = renderers.first().is_some_and(|runtime| {
+                runtime.with_renderer(|renderer| {
+                    let Some(root) = renderer.mounted() else {
+                        return false;
+                    };
+                    let Some(handle) = mounted_handle_for_key(root, key) else {
+                        return false;
+                    };
+                    // SAFETY: The mounted handle owns a live NSView rendered
+                    // on AppKit's main thread.
+                    unsafe {
+                        write_view_capture(
+                            handle.view(),
+                            &directory.join(format!("{prefix}view-{key}.png")),
+                        )
+                    }
+                })
+            });
+            if !captured {
+                eprintln!("Rinka view capture failed key={key}");
+            }
+        }
     }
 
     /// Writes the mounted element named by `RINKA_APPKIT_ELEMENT_CAPTURE`
@@ -865,5 +912,51 @@ impl ApplicationDelegate {
                 afterDelay: 0.02_f64
             ];
         }
+    }
+}
+
+/// Renders one live view into a PNG at the window's backing scale.
+///
+/// # Safety
+///
+/// `view` must be a live NSView used on AppKit's main thread.
+unsafe fn write_view_capture(view: &AnyObject, path: &std::path::Path) -> bool {
+    // SAFETY: cacheDisplayInRect draws the current layout into rep storage
+    // owned by the view; the PNG data is written before anything releases it.
+    unsafe {
+        let bounds: Rect = msg_send![view, bounds];
+        let rep: *mut AnyObject = msg_send![view, bitmapImageRepForCachingDisplayInRect: bounds];
+        let Some(rep) = NonNull::new(rep) else {
+            eprintln!("Rinka view capture failed: no caching rep");
+            return false;
+        };
+        let _: () = msg_send![view, cacheDisplayInRect: bounds, toBitmapImageRep: rep.as_ref()];
+        let properties: *mut AnyObject = msg_send![objc2::class!(NSDictionary), dictionary];
+        // NSBitmapImageFileTypePNG = 4.
+        let data: *mut AnyObject = msg_send![
+            rep.as_ref(),
+            representationUsingType: 4_usize,
+            properties: properties
+        ];
+        let Some(data) = NonNull::new(data) else {
+            eprintln!("Rinka view capture failed: no PNG data");
+            return false;
+        };
+        let Some(path_text) = path.to_str() else {
+            eprintln!("Rinka view capture failed: non-UTF-8 path");
+            return false;
+        };
+        let destination = ns_string(path_text);
+        let written: bool = msg_send![
+            data.as_ref(),
+            writeToFile: destination.as_object(),
+            atomically: true
+        ];
+        let pixels_wide: isize = msg_send![rep.as_ref(), pixelsWide];
+        let pixels_high: isize = msg_send![rep.as_ref(), pixelsHigh];
+        eprintln!(
+            "Rinka window capture path={path_text} pixels={pixels_wide}x{pixels_high} written={written}"
+        );
+        written
     }
 }

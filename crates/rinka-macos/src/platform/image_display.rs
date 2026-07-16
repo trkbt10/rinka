@@ -112,11 +112,15 @@ fn create_image(
     let image = ns_image_from_rgba(content)?;
     // SAFETY: imageViewWithImage: returns a live autoreleased image view on
     // the AppKit main thread; Id::from_borrowed balances its retain in Drop.
+    // Clipping enforces the semantic contract that Actual and Center crop
+    // whatever exceeds the view instead of painting over neighbors.
     let view = unsafe {
         let pointer: *mut AnyObject = msg_send![objc2::class!(NSImageView),
             imageViewWithImage: image.as_object()
         ];
-        Id::from_borrowed(pointer)
+        let view = Id::from_borrowed(pointer);
+        let _: () = msg_send![view.as_object(), setClipsToBounds: true];
+        view
     };
     configure_image_view(view.as_object(), scaling);
     set_string(

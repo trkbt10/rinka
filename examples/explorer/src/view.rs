@@ -189,7 +189,9 @@ const PREVIEW_BITMAP_SCALE: f64 = 2.0;
 /// a different revision and geometry-identical buffers re-use the retained
 /// native image.
 fn preview_bitmap(key: FileKey) -> ImageContent {
-    let logical = 72_u32;
+    // Sized so the complete inspector detail column, including the four
+    // scaling probes, fits the pane without overconstraining Auto Layout.
+    let logical = 64_u32;
     let side = (f64::from(logical) * PREVIEW_BITMAP_SCALE) as u32;
     let stride = side * 4;
     let (base, revision) = match key {
@@ -225,7 +227,7 @@ fn preview_bitmap(key: FileKey) -> ImageContent {
 /// crop different regions.
 fn scaling_probe_bitmap() -> ImageContent {
     let logical_width = 280_u32;
-    let logical_height = 40_u32;
+    let logical_height = 24_u32;
     let width = (f64::from(logical_width) * PREVIEW_BITMAP_SCALE) as u32;
     let height = (f64::from(logical_height) * PREVIEW_BITMAP_SCALE) as u32;
     let stride = width * 4;
@@ -233,7 +235,7 @@ fn scaling_probe_bitmap() -> ImageContent {
     for y in 0..height {
         for x in 0..width {
             let ramp = f64::from(x) / f64::from(width.max(1));
-            let tick = x % 80 < 4 || y % 40 < 4;
+            let tick = x % 80 < 4 || y % 24 < 4;
             let (red, green, blue) = if tick {
                 (0x20, 0x20, 0x20)
             } else {
