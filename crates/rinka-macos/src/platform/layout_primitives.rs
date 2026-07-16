@@ -55,13 +55,16 @@ fn registered_visible_source_widths(registries: &RefCell<Vec<ListRegistry>>) -> 
     result
 }
 
-fn configure_label(view: &AnyObject, role: TextRole, selectable: bool) {
-    // SAFETY: The receiver is an NSTextField label created above.
+/// Returns the AppKit font realizing one semantic text role.
+///
+/// # Safety
+///
+/// Must be called on the AppKit main thread; the returned object follows
+/// class-property lifetime conventions.
+unsafe fn text_role_font(role: TextRole) -> *mut AnyObject {
+    // SAFETY: Guaranteed by the caller; every arm names a public NSFont API.
     unsafe {
-        let _: () = msg_send![view, setSelectable: selectable];
-        let _: () = msg_send![view, setLineBreakMode: 0_isize];
-        let _: () = msg_send![view, setUsesSingleLineMode: false];
-        let font: *mut AnyObject = match role {
+        match role {
             TextRole::Title => msg_send![objc2::class!(NSFont),
                 preferredFontForTextStyle: FONT_TEXT_STYLE_TITLE1,
                 options: std::ptr::null::<AnyObject>()
@@ -81,7 +84,17 @@ fn configure_label(view: &AnyObject, role: TextRole, selectable: bool) {
             TextRole::Monospace => {
                 msg_send![objc2::class!(NSFont), monospacedSystemFontOfSize: 0.0_f64, weight: 0.0_f64]
             }
-        };
+        }
+    }
+}
+
+fn configure_label(view: &AnyObject, role: TextRole, selectable: bool) {
+    // SAFETY: The receiver is an NSTextField label created above.
+    unsafe {
+        let _: () = msg_send![view, setSelectable: selectable];
+        let _: () = msg_send![view, setLineBreakMode: 0_isize];
+        let _: () = msg_send![view, setUsesSingleLineMode: false];
+        let font = text_role_font(role);
         let _: () = msg_send![view, setFont: font];
         if role == TextRole::Secondary {
             let color: *mut AnyObject = msg_send![objc2::class!(NSColor), secondaryLabelColor];

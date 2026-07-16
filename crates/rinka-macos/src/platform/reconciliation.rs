@@ -60,6 +60,26 @@ fn apply_patch(
                 let _: () = msg_send![handle.view(), setEnabled: *enabled];
             }
         }
+        Props::TextArea {
+            content,
+            spans,
+            selection,
+            read_only,
+            role,
+            accessibility_label,
+        } => {
+            apply_text_area(
+                handle,
+                TextAreaConfig {
+                    content,
+                    spans,
+                    selection: *selection,
+                    read_only: *read_only,
+                    role: *role,
+                    accessibility_label,
+                },
+            )?;
+        }
         Props::Toggle {
             label,
             value,

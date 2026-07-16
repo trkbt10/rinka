@@ -15,6 +15,7 @@ struct HandleInner {
     pattern: RefCell<Option<UiPattern>>,
     content_fit_source_width_capped: Cell<bool>,
     table_delegate: RefCell<Option<Retained<TableDelegate>>>,
+    text_delegate: RefCell<Option<Retained<TextAreaDelegate>>>,
     list_row: RefCell<Option<Rc<RefCell<TableRowRecord>>>>,
     canvas_view: RefCell<Option<Retained<CanvasView>>>,
     image_stamp: Cell<Option<ImageStamp>>,
@@ -78,6 +79,7 @@ impl AppKitHandle {
             pattern: RefCell::new(None),
             content_fit_source_width_capped: Cell::new(false),
             table_delegate: RefCell::new(None),
+            text_delegate: RefCell::new(None),
             list_row: RefCell::new(None),
             canvas_view: RefCell::new(None),
             image_stamp: Cell::new(None),
@@ -108,6 +110,7 @@ impl AppKitHandle {
             pattern: RefCell::new(None),
             content_fit_source_width_capped: Cell::new(false),
             table_delegate: RefCell::new(None),
+            text_delegate: RefCell::new(None),
             list_row: RefCell::new(None),
             canvas_view: RefCell::new(None),
             image_stamp: Cell::new(None),
@@ -404,6 +407,25 @@ fn create_element(
                 Vec::new(),
             ))
         }
+        Props::TextArea {
+            content,
+            spans,
+            selection,
+            read_only,
+            role,
+            accessibility_label,
+        } => Ok(create_text_area(
+            mtm,
+            TextAreaConfig {
+                content,
+                spans,
+                selection: *selection,
+                read_only: *read_only,
+                role: *role,
+                accessibility_label,
+            },
+            events,
+        )),
         Props::Toggle {
             label,
             value,

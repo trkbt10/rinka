@@ -112,7 +112,15 @@ unsafe fn layout_scroll_documents(view: &AnyObject) {
     let is_scroll: bool = unsafe { msg_send![view, isKindOfClass: objc2::class!(NSScrollView)] };
     if is_scroll {
         let document: *mut AnyObject = unsafe { msg_send![view, documentView] };
-        if let Some(document) = NonNull::new(document) {
+        // NSTextView documents own their geometry through the standard
+        // vertically-resizable text-container recipe; imposing a frame here
+        // would fight native text layout and reset the scroll position.
+        let is_text_document = unsafe {
+            NonNull::new(document).is_some_and(|document| {
+                msg_send![document.as_ref(), isKindOfClass: objc2::class!(NSTextView)]
+            })
+        };
+        if let Some(document) = NonNull::new(document).filter(|_| !is_text_document) {
             let content_size: Size = unsafe { msg_send![view, contentSize] };
             let fitting_size: Size = unsafe { msg_send![document.as_ref(), fittingSize] };
             let content_size = Size {
