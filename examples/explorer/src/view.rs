@@ -6,7 +6,7 @@ use rinka::{
     CanvasRect, CanvasSize, ClipboardError, CollectionPattern, Component, ControlSize,
     DialogButtonRole, DialogOutcome, Dispatch, DragPayload, DrawScene, Element, FileDrop,
     FilePromise, ImageContent, ImageScaling, ImeEvent, Justify, KeyChord, KeyEvent, KeyIdentity,
-    LineWidth, MenuEntry, MenuItem, OpenPanelDescription, PanelBehavior, PointerEvent,
+    LineWidth, MenuBar, MenuEntry, MenuItem, OpenPanelDescription, PanelBehavior, PointerEvent,
     PointerPhase, PreeditCaret, SavePanelDescription, Size, SortDirection, Spacing, StatusTone,
     Submenu, Symbol, TableColumn, TableSort, TextChange, TextRole, TextSelection, ToolbarAction,
     ToolbarChoice, ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem, ToolbarPlacement, UiPattern,
@@ -632,6 +632,12 @@ pub fn application(scene: Scene) -> ApplicationSpec {
     ApplicationSpec {
         id: "jp.bunko.rinka.explorer".to_owned(),
         name: "Rinka Explorer".to_owned(),
+        // The live menu bar is declared by the main window's component root
+        // (see `explorer_menu_bar`), so its checkmarks and enabled state
+        // reconcile with component state; the application-level slot stays
+        // empty and the router falls back to the main window's declaration
+        // whenever a menu-less window (the activity panel) is focused.
+        menu_bar: MenuBar::default(),
         windows,
     }
 }

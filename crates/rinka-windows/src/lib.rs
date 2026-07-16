@@ -22,6 +22,11 @@ pub enum WindowsDiagnostic {
         /// Stable capability identifier.
         capability: &'static str,
     },
+    /// A declared application-level capability has no Windows realization.
+    UnsupportedApplicationCapability {
+        /// Stable capability identifier.
+        capability: &'static str,
+    },
     /// A Win32 operation returned an operating-system error.
     NativeOperation {
         /// Operation that failed.
@@ -50,6 +55,10 @@ impl fmt::Display for WindowsDiagnostic {
                 formatter,
                 "Windows adapter does not implement {capability} for the toolbar"
             ),
+            Self::UnsupportedApplicationCapability { capability } => write!(
+                formatter,
+                "Windows adapter does not implement {capability} for the application"
+            ),
             Self::NativeOperation { operation, code } => {
                 write!(
                     formatter,
@@ -72,6 +81,15 @@ pub fn validate_element(element: &Element) -> Result<(), WindowsDiagnostic> {
         return Err(WindowsDiagnostic::UnsupportedCapability {
             element: element.kind(),
             capability: "declared accelerator table",
+        });
+    }
+    if element.menu_bar_model().is_some() {
+        // The Win32 contract probe has no HMENU application-menu-bar
+        // realization (reports/app-menu-bar); the declared bar is rejected
+        // instead of silently dropped.
+        return Err(WindowsDiagnostic::UnsupportedCapability {
+            element: element.kind(),
+            capability: "application menu bar",
         });
     }
     if let Props::Button {
@@ -253,6 +271,25 @@ mod tests {
             Err(WindowsDiagnostic::UnsupportedCapability {
                 element: ElementKind::Stack,
                 capability: "declared accelerator table",
+            })
+        );
+    }
+
+    #[test]
+    fn a_declared_menu_bar_is_a_typed_diagnostic() {
+        use rinka_core::{MenuBar, MenuBarEntry, MenuBarMenu, MenuItem, column, label};
+        let element = column([label("main").with_key("title")])
+            .with_key("root")
+            .menu_bar(MenuBar::new([MenuBarMenu::new(
+                "file",
+                "File",
+                [MenuBarEntry::item(MenuItem::new("open", "Open", || {}))],
+            )]));
+        assert_eq!(
+            validate_element(&element),
+            Err(WindowsDiagnostic::UnsupportedCapability {
+                element: ElementKind::Stack,
+                capability: "application menu bar",
             })
         );
     }

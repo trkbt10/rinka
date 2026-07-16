@@ -74,6 +74,17 @@ pub enum WinUiDiagnostic {
         /// Stable window identity.
         window_id: String,
     },
+    /// The application or a window declared a menu bar this host does not
+    /// realize yet.
+    ///
+    /// The WinUI `MenuBar` control integration is tracked in
+    /// `reports/app-menu-bar`; rejecting the declaration keeps the contract
+    /// honest instead of silently dropping declared menus.
+    UnsupportedMenuBar {
+        /// `"application"` for the application-level declaration, otherwise
+        /// the declaring window's stable identity.
+        scope: String,
+    },
     /// Window content declared a semantic capability this host does not
     /// realize yet.
     UnsupportedContentCapability {
@@ -120,6 +131,10 @@ impl fmt::Display for WinUiDiagnostic {
                 formatter,
                 "window '{window_id}' declares an accelerator table the WinUI host does not deliver yet"
             ),
+            Self::UnsupportedMenuBar { scope } => write!(
+                formatter,
+                "'{scope}' declares a menu bar the WinUI host does not realize yet"
+            ),
             Self::UnsupportedContentCapability {
                 window_id,
                 capability,
@@ -165,6 +180,11 @@ pub(crate) fn resolve_workspace_visibility(
 }
 
 fn validate_application(application: &ApplicationSpec) -> Result<(), WinUiDiagnostic> {
+    if !application.menu_bar.is_empty() {
+        return Err(WinUiDiagnostic::UnsupportedMenuBar {
+            scope: "application".to_owned(),
+        });
+    }
     let mut main_windows = 0_usize;
     for window in &application.windows {
         match window.kind {
@@ -181,6 +201,11 @@ fn validate_application(application: &ApplicationSpec) -> Result<(), WinUiDiagno
         if !snapshot.accelerator_table().is_empty() {
             return Err(WinUiDiagnostic::UnsupportedAccelerators {
                 window_id: window.id.as_str().to_owned(),
+            });
+        }
+        if snapshot.menu_bar_model().is_some() {
+            return Err(WinUiDiagnostic::UnsupportedMenuBar {
+                scope: window.id.as_str().to_owned(),
             });
         }
         validate_content(window.id.as_str(), &snapshot)?;
@@ -304,6 +329,7 @@ mod tests {
         ApplicationSpec {
             id: "dev.rinka.test".to_owned(),
             name: "Test".to_owned(),
+            menu_bar: rinka_core::MenuBar::default(),
             windows,
         }
     }
@@ -452,6 +478,41 @@ mod tests {
             validate_application(&application(vec![shortcut_window])),
             Err(WinUiDiagnostic::UnsupportedAccelerators {
                 window_id: "main".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn declared_menu_bars_are_a_typed_diagnostic() {
+        use rinka_core::{MenuBar, MenuBarEntry, MenuBarMenu, MenuItem};
+
+        let bar = || {
+            MenuBar::new([MenuBarMenu::new(
+                "file",
+                "File",
+                [MenuBarEntry::item(MenuItem::new("open", "Open", || {}))],
+            )])
+        };
+
+        let mut menu_application = application(vec![window("main", WindowKind::Main)]);
+        menu_application.menu_bar = bar();
+        assert_eq!(
+            validate_application(&menu_application),
+            Err(WinUiDiagnostic::UnsupportedMenuBar {
+                scope: "application".to_owned(),
+            })
+        );
+
+        let mut menu_window = window("main", WindowKind::Main);
+        menu_window.content = WindowContent::from(
+            column([label("main").with_key("title")])
+                .with_key("root")
+                .menu_bar(bar()),
+        );
+        assert_eq!(
+            validate_application(&application(vec![menu_window])),
+            Err(WinUiDiagnostic::UnsupportedMenuBar {
+                scope: "main".to_owned(),
             })
         );
     }

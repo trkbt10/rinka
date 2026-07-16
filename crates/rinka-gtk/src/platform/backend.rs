@@ -78,6 +78,14 @@ fn validate_element(element: &Element) -> Result<(), GtkError> {
             "declared accelerator tables are not yet delivered by the GTK host".to_owned(),
         ));
     }
+    if element.menu_bar_model().is_some() {
+        // Neither GMenu + set_menubar nor the libadwaita header-bar primary
+        // menu is realized yet; rejecting the declared bar keeps the contract
+        // honest instead of silently dropping menus (reports/app-menu-bar).
+        return Err(GtkError(
+            "a declared application menu bar is not yet realized by the GTK host".to_owned(),
+        ));
+    }
     if element.context_menu_model().is_some() {
         // The GTK realization (GtkPopoverMenu over the gio::Menu model, with
         // per-row popovers inside the ColumnView factories) does not exist

@@ -72,6 +72,9 @@ pub fn application() -> ApplicationSpec {
     ApplicationSpec {
         id: "jp.bunko.rinka.windows-contract".to_owned(),
         name: "Rinka Windows Contract".to_owned(),
+        // The Win32 contract probe declares no menu bar; the classic host
+        // rejects a declared one with a typed diagnostic.
+        menu_bar: rinka::MenuBar::default(),
         windows: vec![WindowSpec {
             id: WindowId::new("windows-contract-main"),
             title: "Rinka Windows Native Contract".to_owned(),

@@ -3,7 +3,7 @@
 use crate::dialog::DialogError;
 use crate::runtime::{UpdateContext, WeakDispatch};
 use crate::services::PlatformServices;
-use crate::{Component, Dispatch, Element, ToolbarDisplay, ToolbarItem};
+use crate::{Component, Dispatch, Element, MenuBar, ToolbarDisplay, ToolbarItem};
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::fmt;
@@ -238,6 +238,15 @@ pub struct ApplicationSpec {
     pub id: String,
     /// Human-readable application name.
     pub name: String,
+    /// Application-level menu bar declaration.
+    ///
+    /// This is the bar installed at startup and whenever no window declares
+    /// its own. Because component state lives in windows, a bar whose items
+    /// dispatch component messages or reflect component state is redeclared
+    /// by a window content root through [`crate::Element::menu_bar`]; the
+    /// focused window's declaration then supersedes this one. An empty bar
+    /// declares no application-level menus.
+    pub menu_bar: MenuBar,
     /// Initial windows and panels.
     pub windows: Vec<WindowSpec>,
 }

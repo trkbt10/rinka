@@ -1,5 +1,13 @@
 /// Runs the native Windows application until its last top-level window closes.
 pub fn run(application: ApplicationSpec) -> Result<(), WindowsDiagnostic> {
+    if !application.menu_bar.is_empty() {
+        // The Win32 contract probe has no HMENU application-menu-bar
+        // realization (reports/app-menu-bar); the declared bar is rejected
+        // instead of silently dropped.
+        return Err(WindowsDiagnostic::UnsupportedApplicationCapability {
+            capability: "application menu bar",
+        });
+    }
     let _apartment = initialize_native_process()?;
     let instance = module_instance()?;
     register_window_class(instance)?;

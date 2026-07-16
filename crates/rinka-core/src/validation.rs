@@ -111,6 +111,13 @@ pub enum TreeError {
         /// Human-readable invariant violation.
         reason: String,
     },
+    /// A declared application menu bar violated a structural invariant.
+    InvalidMenuBar {
+        /// Element path used for diagnostics.
+        path: String,
+        /// Human-readable invariant violation.
+        reason: String,
+    },
 }
 
 impl fmt::Display for TreeError {
@@ -166,6 +173,9 @@ impl fmt::Display for TreeError {
             Self::InvalidDragDeclaration { path, reason } => {
                 write!(formatter, "invalid drag declaration at {path}: {reason}")
             }
+            Self::InvalidMenuBar { path, reason } => {
+                write!(formatter, "invalid menu bar at {path}: {reason}")
+            }
         }
     }
 }
@@ -174,7 +184,37 @@ impl Error for TreeError {}
 
 pub(crate) fn validate_tree(root: &Element) -> Result<(), TreeError> {
     validate_accelerator_table(root)?;
+    validate_menu_bar(root)?;
     validate_node(root, "root")
+}
+
+fn validate_menu_bar(root: &Element) -> Result<(), TreeError> {
+    if let Some(menu_bar) = root.menu_bar_model()
+        && let Err(reason) = menu_bar.validate()
+    {
+        return Err(TreeError::InvalidMenuBar {
+            path: "root".to_owned(),
+            reason,
+        });
+    }
+    validate_menu_bar_placement(root.children(), "root")
+}
+
+fn validate_menu_bar_placement(children: &[Element], path: &str) -> Result<(), TreeError> {
+    for (index, child) in children.iter().enumerate() {
+        let name = child
+            .key()
+            .map_or_else(|| index.to_string(), |key| key.as_str().to_owned());
+        let child_path = format!("{path}/{name}");
+        if child.menu_bar_model().is_some() {
+            return Err(TreeError::InvalidMenuBar {
+                path: child_path,
+                reason: "the menu bar must be declared on the window content root".to_owned(),
+            });
+        }
+        validate_menu_bar_placement(child.children(), &child_path)?;
+    }
+    Ok(())
 }
 
 fn validate_accelerator_table(root: &Element) -> Result<(), TreeError> {

@@ -277,6 +277,14 @@ pub fn run(application: ApplicationSpec) -> i32 {
         eprintln!("GTK host error: application has no windows");
         return 1;
     }
+    if !application.menu_bar.is_empty() {
+        // The application-level bar has no GTK realization yet either
+        // (reports/app-menu-bar); reject it like a window-declared bar.
+        eprintln!(
+            "GTK host error: a declared application menu bar is not yet realized by the GTK host"
+        );
+        return 1;
+    }
     let app = adw::Application::builder()
         .application_id(&application.id)
         .build();
@@ -506,6 +514,7 @@ mod tests {
             run(ApplicationSpec {
                 id: "jp.bunko.rinka.empty".to_owned(),
                 name: "Empty".to_owned(),
+                menu_bar: rinka_core::MenuBar::default(),
                 windows: Vec::new(),
             }),
             1

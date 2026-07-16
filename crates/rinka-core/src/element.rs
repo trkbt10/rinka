@@ -4,6 +4,7 @@ use crate::accelerator::Accelerator;
 use crate::drag::{DragPayload, DropTarget, FileDrop, FilePromise, PayloadDrop};
 use crate::event::{EventHandlers, InputHandler, SelectionChangeHandler, TextChangeHandler};
 use crate::menu::{ContextMenu, MenuEntry};
+use crate::menu_bar::MenuBar;
 use crate::semantics::*;
 use crate::{ActivateHandler, ToggleHandler};
 use std::fmt;
@@ -45,6 +46,7 @@ pub struct Element {
     pub(crate) children: Vec<Self>,
     pub(crate) handlers: EventHandlers,
     pub(crate) accelerators: Vec<Accelerator>,
+    pub(crate) menu_bar: Option<MenuBar>,
 }
 
 impl Element {
@@ -55,6 +57,7 @@ impl Element {
             children: Vec::new(),
             handlers: EventHandlers::default(),
             accelerators: Vec::new(),
+            menu_bar: None,
         }
     }
 
@@ -65,6 +68,7 @@ impl Element {
             children: children.into_iter().collect(),
             handlers: EventHandlers::default(),
             accelerators: Vec::new(),
+            menu_bar: None,
         }
     }
 
@@ -547,12 +551,34 @@ impl Element {
         self.handlers.drop_target.as_ref()
     }
 
+    /// Declares the application menu bar on the window's content root.
+    ///
+    /// The declaration is reconciled like every other description: while this
+    /// window is focused its bar is the effective application menu bar, its
+    /// item handlers dispatch into this window's queued message delivery, and
+    /// re-rendering updates labels, enabled state, checkmarks, and structure
+    /// without reconnecting anything native. Validation rejects a bar
+    /// declared below the root.
+    pub fn menu_bar(mut self, menu_bar: MenuBar) -> Self {
+        self.menu_bar = Some(menu_bar);
+        self
+    }
+
+    /// Returns the declared application menu bar model.
+    pub fn menu_bar_model(&self) -> Option<&MenuBar> {
+        self.menu_bar.as_ref()
+    }
+
     pub(crate) fn take_children(&mut self) -> Vec<Self> {
         std::mem::take(&mut self.children)
     }
 
     pub(crate) fn take_accelerators(&mut self) -> Vec<Accelerator> {
         std::mem::take(&mut self.accelerators)
+    }
+
+    pub(crate) fn take_menu_bar(&mut self) -> Option<MenuBar> {
+        self.menu_bar.take()
     }
 }
 
@@ -565,6 +591,7 @@ impl fmt::Debug for Element {
             .field("children", &self.children)
             .field("handlers", &self.handlers)
             .field("accelerators", &self.accelerators)
+            .field("menu_bar", &self.menu_bar.is_some())
             .finish()
     }
 }

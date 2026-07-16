@@ -258,7 +258,9 @@ fn find_item_in<'entries>(entries: &'entries [MenuEntry], id: &str) -> Option<&'
     None
 }
 
-fn activation_handler_in(
+/// Resolves an enabled item's activation handler inside shared menu entries,
+/// folding ancestor enabled state; shared with the menu bar model.
+pub(crate) fn activation_handler_in(
     entries: &[MenuEntry],
     id: &str,
     ancestors_enabled: bool,
@@ -283,7 +285,9 @@ fn activation_handler_in(
     None
 }
 
-fn validate_identities_in<'entries>(
+/// Checks identity uniqueness inside shared menu entries, collecting every
+/// identity into `seen`; shared with the menu bar model.
+pub(crate) fn validate_identities_in<'entries>(
     entries: &'entries [MenuEntry],
     seen: &mut std::collections::HashSet<&'entries str>,
 ) -> Result<(), String> {

@@ -376,7 +376,13 @@ impl<B: NativeBackend + 'static> WindowRuntime<B> {
         write(&mut self.inner.renderer.borrow_mut())
     }
 
-    pub(crate) fn set_reconciled_handler(&self, handler: impl Fn() + 'static) {
+    /// Schedules a platform pass after content reconciles from a component
+    /// update.
+    ///
+    /// Platform hosts use this to refresh application-level chrome derived
+    /// from the window's declaration — the application menu bar — after every
+    /// reconciliation, without polling.
+    pub fn set_reconciled_handler(&self, handler: impl Fn() + 'static) {
         *self.inner.reconciled.borrow_mut() = Some(Rc::new(handler));
     }
 

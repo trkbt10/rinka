@@ -2,6 +2,7 @@
 
 use crate::accelerator::AcceleratorBindings;
 use crate::dialog::DialogError;
+use crate::menu_bar::MenuBarBindings;
 use crate::validation::{TreeError, validate_tree};
 use crate::{Element, EventBindings, NativeBackend, PropertyPatch};
 use std::error::Error;
@@ -84,6 +85,7 @@ pub struct Renderer<B: NativeBackend> {
     backend: B,
     mounted: Option<MountedNode<B::Handle>>,
     accelerators: AcceleratorBindings,
+    menu_bar: MenuBarBindings,
     last_stats: RenderStats,
 }
 
@@ -94,6 +96,7 @@ impl<B: NativeBackend> Renderer<B> {
             backend,
             mounted: None,
             accelerators: AcceleratorBindings::default(),
+            menu_bar: MenuBarBindings::default(),
             last_stats: RenderStats::default(),
         }
     }
@@ -103,6 +106,7 @@ impl<B: NativeBackend> Renderer<B> {
         validate_tree(&next).map_err(RenderError::Tree)?;
         validate_backend(&self.backend, &next).map_err(RenderError::Backend)?;
         let accelerators = next.take_accelerators();
+        let menu_bar = next.take_menu_bar();
 
         let root = self.backend.root();
         let mut stats = RenderStats::default();
@@ -120,6 +124,7 @@ impl<B: NativeBackend> Renderer<B> {
         };
         self.mounted = Some(mounted);
         self.accelerators.replace(&accelerators);
+        self.menu_bar.replace(menu_bar);
         self.last_stats = stats;
         Ok(stats)
     }
@@ -130,6 +135,14 @@ impl<B: NativeBackend> Renderer<B> {
     /// every successful render replaces the entries in place.
     pub fn accelerator_bindings(&self) -> &AcceleratorBindings {
         &self.accelerators
+    }
+
+    /// Returns the stable menu bar slot owned by this renderer.
+    ///
+    /// A platform host registers this value once with its menu bar router;
+    /// every successful render replaces the declared model in place.
+    pub fn menu_bar_bindings(&self) -> &MenuBarBindings {
+        &self.menu_bar
     }
 
     /// Returns the adapter.

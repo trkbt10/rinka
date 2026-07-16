@@ -13,6 +13,7 @@ mod drag;
 mod element;
 mod event;
 mod menu;
+mod menu_bar;
 mod pattern;
 mod projection;
 mod reconcile;
@@ -56,6 +57,10 @@ pub use event::{
     TextChangeHandler, ToggleHandler,
 };
 pub use menu::{ContextMenu, MenuEntry, MenuItem, MenuItemRole, Submenu};
+pub use menu_bar::{
+    MenuBar, MenuBarActivation, MenuBarBindings, MenuBarEntry, MenuBarMenu, MenuBarMenuRole,
+    MenuBarRouter, MenuBarUpdate, StandardItem,
+};
 pub use pattern::{PatternRegion, UiPattern};
 pub use projection::{ProjectedHandle, WindowProjection};
 pub use reconcile::{MountedNode, RenderError, RenderStats, Renderer};
