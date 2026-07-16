@@ -348,6 +348,7 @@ define_class!(
             self.begin_clipboard_probe();
             self.begin_text_area_probe();
             self.begin_dialog_probe();
+            self.begin_drag_drop_probe();
         }
 
         #[unsafe(method(runTransitionProbe:))]

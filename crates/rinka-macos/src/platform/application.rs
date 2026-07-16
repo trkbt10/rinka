@@ -4,6 +4,7 @@ use super::*;
 
 include!("application/probes.rs");
 include!("application/context_menu_probe.rs");
+include!("application/drag_drop_probe.rs");
 include!("application/delegate.rs");
 include!("application/textarea_probe.rs");
 include!("application/window_host.rs");
