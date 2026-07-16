@@ -220,7 +220,6 @@ fn create_host_window(
     set_native_font(root, font.0);
     apply_native_theme(root, dark);
     let backend = WindowsBackend::new(root, dpi, font.clone(), dark);
-<<<<<<< HEAD
     let runtime = WindowRuntime::mount(
         Renderer::new(backend),
         spec.content,
@@ -228,19 +227,6 @@ fn create_host_window(
     )
     .map_err(|error| WindowsDiagnostic::InvalidNativeState {
         reason: format!("initial Windows render failed: {error}"),
-=======
-    // The Win32 contract probe injects no dialog service: a component
-    // raising a dialog surfaces the typed RenderError::Dialog(NoPresenter).
-    let runtime = WindowRuntime::mount(
-        Renderer::new(backend),
-        spec.content,
-        rinka_core::PlatformServices::new(),
-    )
-    .map_err(|error| {
-        WindowsDiagnostic::InvalidNativeState {
-            reason: format!("initial Windows render failed: {error}"),
-        }
->>>>>>> 85c4bc9 (refactor: reach dialog presentation through the update context's platform services)
     })?;
     let mut host = Box::new(HostWindow {
         hwnd,

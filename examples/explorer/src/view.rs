@@ -361,6 +361,10 @@ impl Component for ExplorerComponent {
                 // The consumer's iron rule "destructive stays destructive":
                 // Delete carries the destructive role and Cancel receives the
                 // return-key default, so the safe answer is the easy answer.
+                // Button 0 occupies the platform's primary position (the
+                // rightmost slot on macOS): Cancel sits there with the
+                // return key, and Delete keeps the destructive treatment
+                // away from both.
                 context.dialogs().alert(
                     Alert::new(
                         format!("Delete “{}”?", record.title),
@@ -371,16 +375,16 @@ impl Component for ExplorerComponent {
                         ),
                     )
                     .button(
-                        "Delete",
-                        DialogButtonRole::Destructive,
-                        ExplorerMessage::DeleteConfirmed(key),
-                    )
-                    .button(
                         "Cancel",
                         DialogButtonRole::Cancel,
                         ExplorerMessage::DeleteCancelled,
                     )
-                    .default_button(1),
+                    .button(
+                        "Delete",
+                        DialogButtonRole::Destructive,
+                        ExplorerMessage::DeleteConfirmed(key),
+                    )
+                    .default_button(0),
                 );
             }
             ExplorerMessage::DuplicateFile(file) => {
@@ -1936,5 +1940,50 @@ mod tests {
         assert_eq!(panel.initial_size.height, 160.0);
         assert_eq!(panel.minimum_size.width, 320.0);
         assert_eq!(panel.minimum_size.height, 150.0);
+    }
+
+    #[test]
+    fn the_delete_confirm_keeps_destructive_off_the_return_key_default() {
+        let (_runtime, presenter, delete_events) = mounted_explorer();
+        delete_events.emit_activate();
+
+        assert_eq!(presenter.presented_count(), 1);
+        let Some(DialogDescription::Alert(alert)) = presenter.description(0) else {
+            panic!("expected a confirmation alert");
+        };
+        assert_eq!(alert.title, "Delete \u{201c}Cargo.toml\u{201d}?");
+        assert_eq!(alert.buttons[0].label, "Cancel");
+        assert_eq!(alert.buttons[0].role, DialogButtonRole::Cancel);
+        assert_eq!(alert.buttons[1].label, "Delete");
+        assert_eq!(alert.buttons[1].role, DialogButtonRole::Destructive);
+        // Cancel owns the return key; the destructive button never does.
+        assert_eq!(alert.default_button, Some(0));
+    }
+
+    #[test]
+    fn confirming_the_delete_removes_the_file_and_clears_the_selection() {
+        let (runtime, presenter, delete_events) = mounted_explorer();
+        delete_events.emit_activate();
+
+        assert!(presenter.deliver(0, DialogOutcome::ButtonChosen(1)));
+        runtime.with_renderer(|renderer| {
+            let backend = renderer.backend();
+            assert!(backend.find_by_key("file-Cargo").is_none());
+            assert!(backend.find_by_key("inspector-state").is_some());
+        });
+        assert!(runtime.take_error().is_none());
+    }
+
+    #[test]
+    fn cancelling_the_delete_keeps_the_file() {
+        let (runtime, presenter, delete_events) = mounted_explorer();
+        delete_events.emit_activate();
+
+        assert!(presenter.deliver(0, DialogOutcome::ButtonChosen(0)));
+        runtime.with_renderer(|renderer| {
+            let backend = renderer.backend();
+            assert!(backend.find_by_key("file-Cargo").is_some());
+        });
+        assert!(runtime.take_error().is_none());
     }
 }

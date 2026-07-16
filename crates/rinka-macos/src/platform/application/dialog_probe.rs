@@ -7,6 +7,42 @@
 
 const DIALOG_PROBE_MAX_TURNS: usize = 200;
 
+/// Turns a panel sheet is given to finish connecting its remote content
+/// before the probe confirms it programmatically.
+const DIALOG_PROBE_PANEL_SETTLE_TURNS: usize = 10;
+
+/// Confirms a panel sheet through the documented programmatic path,
+/// `-[NSWindow endSheet:returnCode:]`, which runs the same completion
+/// handler the panel's own default button would.
+///
+/// The panels are hosted by a remote view service on current macOS: the
+/// legacy `-[NSSavePanel ok:]` action raises
+/// `NSGenericException: … not implemented`, and synthesized key events are
+/// not forwarded into the remote content, so ending the sheet session with
+/// `NSModalResponseOK` is the supported in-process confirmation. No global
+/// input is injected and the probe never takes focus from the user.
+///
+/// # Safety
+///
+/// `window` must own `sheet` as its attached sheet; both must be live
+/// NSWindow objects used on AppKit's main thread.
+unsafe fn dialog_probe_confirm_panel(window: &AnyObject, sheet: &AnyObject) -> bool {
+    let outcome = objc2::exception::catch(AssertUnwindSafe(|| {
+        // SAFETY: endSheet:returnCode: is public NSWindow API for ending the
+        // document-modal session begun by beginSheetModalForWindow.
+        unsafe {
+            let _: () = msg_send![window, endSheet: sheet, returnCode: NS_MODAL_RESPONSE_OK];
+        }
+    }));
+    match outcome {
+        Ok(()) => true,
+        Err(exception) => {
+            eprintln!("Rinka dialog probe panel_confirm exception={exception:?}");
+            false
+        }
+    }
+}
+
 /// Compacts a path to its final two components, mirroring the explorer's
 /// narrow-pane display so mounted label text can be asserted exactly.
 fn dialog_probe_compact_path(path: &std::path::Path) -> String {
@@ -241,6 +277,13 @@ impl ApplicationDelegate {
                     self.dialog_probe_retry("open_panel_sheet");
                     return;
                 };
+                // The remote panel content connects asynchronously after the
+                // sheet attaches; give it a settled turn budget before the
+                // probe reads facts and confirms.
+                if attempts < DIALOG_PROBE_PANEL_SETTLE_TURNS {
+                    self.dialog_probe_retry("open_panel_sheet");
+                    return;
+                }
                 let expected_directory = dialog_probe_panel_directory()
                     .map_or_else(String::new, |path| path.display().to_string());
                 // SAFETY: The attached sheet is the live NSOpenPanel; only
@@ -277,10 +320,15 @@ impl ApplicationDelegate {
                     self.finish_dialog_probe();
                     return;
                 }
-                // SAFETY: The live panel renders and confirms on main.
-                unsafe {
+                // SAFETY: The live panel renders and its sheet session ends
+                // with OK on main.
+                let confirmed = unsafe {
                     self.capture_dialog_sheet(sheet.as_ref(), "dialog-open-panel.png");
-                    let _: () = msg_send![sheet.as_ref(), ok: std::ptr::null::<AnyObject>()];
+                    dialog_probe_confirm_panel(window.as_object(), sheet.as_ref())
+                };
+                if !confirmed {
+                    self.fail_dialog_probe("open_panel_confirm", "end-sheet-failed");
+                    return;
                 }
                 self.advance_dialog_probe_step();
             }
@@ -319,6 +367,10 @@ impl ApplicationDelegate {
                     self.dialog_probe_retry("save_panel_sheet");
                     return;
                 };
+                if attempts < DIALOG_PROBE_PANEL_SETTLE_TURNS {
+                    self.dialog_probe_retry("save_panel_sheet");
+                    return;
+                }
                 let expected_directory = dialog_probe_panel_directory()
                     .map_or_else(String::new, |path| path.display().to_string());
                 // SAFETY: The attached sheet is the live NSSavePanel; only
@@ -353,10 +405,15 @@ impl ApplicationDelegate {
                     self.finish_dialog_probe();
                     return;
                 }
-                // SAFETY: The live panel renders and confirms on main.
-                unsafe {
+                // SAFETY: The live panel renders and its sheet session ends
+                // with OK on main.
+                let confirmed = unsafe {
                     self.capture_dialog_sheet(sheet.as_ref(), "dialog-save-panel.png");
-                    let _: () = msg_send![sheet.as_ref(), ok: std::ptr::null::<AnyObject>()];
+                    dialog_probe_confirm_panel(window.as_object(), sheet.as_ref())
+                };
+                if !confirmed {
+                    self.fail_dialog_probe("save_panel_confirm", "end-sheet-failed");
+                    return;
                 }
                 self.advance_dialog_probe_step();
             }

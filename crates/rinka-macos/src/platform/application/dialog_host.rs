@@ -57,37 +57,22 @@ unsafe fn present_alert_sheet(
     responder: DialogResponder,
 ) {
     let alert = new_object(objc2::class!(NSAlert));
-    // SAFETY: NSAlert text, button, and key-equivalent properties are public
-    // AppKit API applied to the alert this host just created.
+    let mut natives: Vec<*mut AnyObject> = Vec::with_capacity(description.buttons.len());
+    // SAFETY: NSAlert text and button properties are public AppKit API
+    // applied to the alert this host just created.
     unsafe {
         let title = ns_string(&description.title);
         let body = ns_string(&description.body);
         let _: () = msg_send![alert.as_object(), setMessageText: title.as_object()];
         let _: () = msg_send![alert.as_object(), setInformativeText: body.as_object()];
-        let empty = ns_string("");
-        let escape = ns_string("\u{1b}");
-        let return_key = ns_string("\r");
-        for (index, button) in description.buttons.iter().enumerate() {
+        for button in &description.buttons {
             let label = ns_string(&button.label);
             let native: *mut AnyObject =
                 msg_send![alert.as_object(), addButtonWithTitle: label.as_object()];
-            // AppKit gives the first button the return key and a button
-            // titled "Cancel" the escape key implicitly; both are cleared so
-            // the declared roles and the validated default are the only key
-            // sources ("destructive stays destructive").
-            let _: () = msg_send![native, setKeyEquivalent: empty.as_object()];
-            match button.role {
-                DialogButtonRole::Standard => {}
-                DialogButtonRole::Cancel => {
-                    let _: () = msg_send![native, setKeyEquivalent: escape.as_object()];
-                }
-                DialogButtonRole::Destructive => {
-                    let _: () = msg_send![native, setHasDestructiveAction: true];
-                }
+            if button.role == DialogButtonRole::Destructive {
+                let _: () = msg_send![native, setHasDestructiveAction: true];
             }
-            if description.default_button == Some(index) {
-                let _: () = msg_send![native, setKeyEquivalent: return_key.as_object()];
-            }
+            natives.push(native);
         }
     }
     let responder = Cell::new(Some(responder));
@@ -103,12 +88,28 @@ unsafe fn present_alert_sheet(
         responder.deliver(outcome);
     });
     // SAFETY: beginSheetModalForWindow attaches the alert's panel to the
-    // live parent window and copies the completion block.
+    // live parent window and copies the completion block. Key equivalents
+    // are applied only after presentation because NSAlert re-derives its
+    // implicit ones (first button return, "Cancel" title escape) while it
+    // prepares the sheet; the declared roles and the validated default must
+    // be the only key sources ("destructive stays destructive").
     unsafe {
         let _: () = msg_send![alert.as_object(),
             beginSheetModalForWindow: window,
             completionHandler: &*handler
         ];
+        let empty = ns_string("");
+        let escape = ns_string("\u{1b}");
+        let return_key = ns_string("\r");
+        for (index, native) in natives.iter().copied().enumerate() {
+            let _: () = msg_send![native, setKeyEquivalent: empty.as_object()];
+            if description.buttons[index].role == DialogButtonRole::Cancel {
+                let _: () = msg_send![native, setKeyEquivalent: escape.as_object()];
+            }
+            if description.default_button == Some(index) {
+                let _: () = msg_send![native, setKeyEquivalent: return_key.as_object()];
+            }
+        }
     }
 }
 

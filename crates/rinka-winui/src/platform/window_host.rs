@@ -120,16 +120,7 @@ impl ui::Component for WindowComponent {
 
         let redraw = request_redraw.clone();
         let projection = cx.use_memo((), || {
-<<<<<<< HEAD
             WindowProjection::mount(self.window.content.clone(), crate::platform_services())
-=======
-            // No dialog service yet: a raised dialog is the typed
-            // RenderError::Dialog(NoPresenter) read via take_error below.
-            WindowProjection::mount(
-                self.window.content.clone(),
-                rinka_core::PlatformServices::new(),
-            )
->>>>>>> 85c4bc9 (refactor: reach dialog presentation through the update context's platform services)
                 .map(|projection| {
                     let projection = Rc::new(projection);
                     projection.set_reconciled_handler(move || {
@@ -214,11 +205,7 @@ fn prepare(application: ApplicationSpec) -> Result<PreparedApplication, WinUiDia
     let mut main = None;
     let mut panels = Vec::new();
     for window in application.windows {
-<<<<<<< HEAD
         WindowProjection::mount(window.content.clone(), crate::platform_services())
-=======
-        WindowProjection::mount(window.content.clone(), rinka_core::PlatformServices::new())
->>>>>>> 85c4bc9 (refactor: reach dialog presentation through the update context's platform services)
             .map_err(|error| WinUiDiagnostic::Projection(error.to_string()))?;
         match window.kind {
             WindowKind::Main => main = Some(window),
