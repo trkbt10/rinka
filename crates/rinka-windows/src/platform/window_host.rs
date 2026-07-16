@@ -388,16 +388,7 @@ fn build_toolbar(
                 add_toolbar_tooltip(host, hwnd, &item.help)?;
                 set_enabled(hwnd, item.enabled);
                 let mut commands = Vec::new();
-                for entry in entries {
-                    match entry {
-                        ToolbarMenuEntry::Action(action) => commands.push(MenuCommand::Action {
-                            label: action.label.clone(),
-                            enabled: action.enabled,
-                            events: EventBindings::activate(action.on_activate.clone()),
-                        }),
-                        ToolbarMenuEntry::Separator => commands.push(MenuCommand::Separator),
-                    }
-                }
+                append_menu_commands(entries, item.enabled, &mut commands)?;
                 host.commands.insert(
                     id,
                     Command::Menu {
@@ -663,6 +654,37 @@ fn add_toolbar_tooltip(
     Ok(())
 }
 
+/// Collects the shared menu vocabulary into flat popup commands.
+///
+/// `ancestors_enabled` folds the enabled state of the owning toolbar item and
+/// every enclosing submenu into each command. The classic popup probe has no
+/// nested-menu realization yet, so a submenu entry is a typed diagnostic
+/// rather than a silent drop; a destructive role keeps the standard popup
+/// appearance, as recorded in reports/context-menus.
+fn append_menu_commands(
+    entries: &[MenuEntry],
+    ancestors_enabled: bool,
+    commands: &mut Vec<MenuCommand>,
+) -> Result<(), WindowsDiagnostic> {
+    for entry in entries {
+        match entry {
+            MenuEntry::Item(item) => commands.push(MenuCommand::Action {
+                label: item.label.clone(),
+                enabled: ancestors_enabled && item.enabled,
+                checked: item.checked,
+                events: EventBindings::activate(item.on_activate.clone()),
+            }),
+            MenuEntry::Separator => commands.push(MenuCommand::Separator),
+            MenuEntry::Submenu(_) => {
+                return Err(WindowsDiagnostic::UnsupportedToolbarCapability {
+                    capability: "submenu entries in a toolbar menu",
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 fn show_command_menu(owner: HWND, button: HWND, entries: &[MenuCommand]) {
     // SAFETY: the menu exists only for this synchronous popup interaction.
     unsafe {
@@ -672,9 +694,16 @@ fn show_command_menu(owner: HWND, button: HWND, entries: &[MenuCommand]) {
         }
         for (index, entry) in entries.iter().enumerate() {
             match entry {
-                MenuCommand::Action { label, enabled, .. } => {
+                MenuCommand::Action {
+                    label,
+                    enabled,
+                    checked,
+                    ..
+                } => {
                     let label = wide(label);
-                    let flags = MF_STRING | if *enabled { 0 } else { MF_GRAYED };
+                    let flags = MF_STRING
+                        | if *enabled { 0 } else { MF_GRAYED }
+                        | if *checked { MF_CHECKED } else { 0 };
                     let _ = AppendMenuW(menu, flags, index + 1, label.as_ptr());
                 }
                 MenuCommand::Separator => {

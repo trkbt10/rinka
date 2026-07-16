@@ -543,62 +543,32 @@ fn create_toolbar_menu(
     mtm: MainThreadMarker,
     spec: &ToolbarItem,
     symbol: Symbol,
-    entries: &[ToolbarMenuEntry],
+    entries: &[MenuEntry],
 ) -> (Id, Vec<Retained<ActionTarget>>) {
     let item = allocate_toolbar_item(
         objc2::class!(NSMenuToolbarItem),
         &toolbar_identifier(&spec.id),
     );
     configure_toolbar_item(item.as_object(), &spec.label, &spec.help, spec.enabled);
-    let title = ns_string(&spec.label);
-    let menu = unsafe {
-        let allocated: *mut AnyObject = msg_send![objc2::class!(NSMenu), alloc];
-        let pointer: *mut AnyObject = msg_send![allocated, initWithTitle: title.as_object()];
-        Id::from_owned(pointer)
-    };
+    let menu = create_ns_menu(&spec.label);
     let mut targets = Vec::new();
-    // SAFETY: NSMenu retains each inserted item; explicit targets are retained
-    // by the toolbar delegate for the same lifetime.
+    append_ns_menu_entries(
+        &menu,
+        entries,
+        spec.enabled,
+        &mut targets,
+        &|menu_item: &MenuItem| {
+            ActionTarget::new(
+                mtm,
+                EventBindings::activate(menu_item.on_activate.clone()),
+                TargetKind::Activate,
+            )
+        },
+    );
+    // SAFETY: The receiver is an NSMenuToolbarItem; it retains the menu, and
+    // the explicit targets are retained by the toolbar delegate for the same
+    // lifetime because NSMenuItem holds its target weakly.
     unsafe {
-        let _: () = msg_send![menu.as_object(), setAutoenablesItems: false];
-        for entry in entries {
-            match entry {
-                ToolbarMenuEntry::Separator => {
-                    let separator: *mut AnyObject =
-                        msg_send![objc2::class!(NSMenuItem), separatorItem];
-                    let _: () = msg_send![menu.as_object(), addItem: separator];
-                }
-                ToolbarMenuEntry::Action(action) => {
-                    let target = ActionTarget::new(
-                        mtm,
-                        EventBindings::activate(action.on_activate.clone()),
-                        TargetKind::Activate,
-                    );
-                    let title = ns_string(&action.label);
-                    let key = ns_string("");
-                    let allocated: *mut AnyObject = msg_send![objc2::class!(NSMenuItem), alloc];
-                    let menu_item: *mut AnyObject = msg_send![allocated,
-                        initWithTitle: title.as_object(),
-                        action: sel!(performAction:),
-                        keyEquivalent: key.as_object()
-                    ];
-                    let menu_item = Id::from_owned(menu_item);
-                    if let Some(chord) = action.chord {
-                        // The menu displays the chord; app-wide delivery is
-                        // owned by the window's accelerator table.
-                        apply_menu_item_chord(menu_item.as_object(), chord);
-                    }
-                    let _: () = msg_send![menu_item.as_object(), setTarget: &*target];
-                    let _: () = msg_send![menu_item.as_object(), setEnabled: spec.enabled && action.enabled];
-                    set_string(menu_item.as_object(), "setToolTip:", &action.help);
-                    if let Some(image) = system_image(action.symbol) {
-                        let _: () = msg_send![menu_item.as_object(), setImage: image.as_object()];
-                    }
-                    let _: () = msg_send![menu.as_object(), addItem: menu_item.as_object()];
-                    targets.push(target);
-                }
-            }
-        }
         let _: () = msg_send![item.as_object(), setMenu: menu.as_object()];
         let _: () = msg_send![item.as_object(), setShowsIndicator: true];
         if let Some(image) = system_image(symbol) {
@@ -606,6 +576,119 @@ fn create_toolbar_menu(
         }
     }
     (item, targets)
+}
+
+fn create_ns_menu(title: &str) -> Id {
+    let title = ns_string(title);
+    // SAFETY: initWithTitle: is NSMenu's designated initializer. Automatic
+    // enabling is disabled because Rinka's declarative enabled state is
+    // authoritative for every menu item.
+    unsafe {
+        let allocated: *mut AnyObject = msg_send![objc2::class!(NSMenu), alloc];
+        let pointer: *mut AnyObject = msg_send![allocated, initWithTitle: title.as_object()];
+        let menu = Id::from_owned(pointer);
+        let _: () = msg_send![menu.as_object(), setAutoenablesItems: false];
+        menu
+    }
+}
+
+/// Appends the shared menu vocabulary onto a native menu.
+///
+/// `ancestors_enabled` folds the enabled state of the owning control and every
+/// enclosing submenu into each item, matching the semantic contract that a
+/// disabled ancestor also disables its entries. The caller owns target
+/// retention because NSMenuItem holds its target weakly.
+fn append_ns_menu_entries(
+    menu: &Id,
+    entries: &[MenuEntry],
+    ancestors_enabled: bool,
+    targets: &mut Vec<Retained<ActionTarget>>,
+    make_target: &dyn Fn(&MenuItem) -> Retained<ActionTarget>,
+) {
+    for entry in entries {
+        match entry {
+            MenuEntry::Separator => {
+                // SAFETY: separatorItem returns a shared autoreleased item and
+                // NSMenu retains every item it contains.
+                unsafe {
+                    let separator: *mut AnyObject =
+                        msg_send![objc2::class!(NSMenuItem), separatorItem];
+                    let _: () = msg_send![menu.as_object(), addItem: separator];
+                }
+            }
+            MenuEntry::Item(item) => {
+                let target = make_target(item);
+                let native = create_ns_menu_item(item, ancestors_enabled, &target);
+                // SAFETY: NSMenu retains the inserted item.
+                unsafe {
+                    let _: () = msg_send![menu.as_object(), addItem: native.as_object()];
+                }
+                targets.push(target);
+            }
+            MenuEntry::Submenu(submenu) => {
+                let enabled = ancestors_enabled && submenu.enabled;
+                let title = ns_string(&submenu.label);
+                let key = ns_string("");
+                let nested = create_ns_menu(&submenu.label);
+                append_ns_menu_entries(&nested, &submenu.entries, enabled, targets, make_target);
+                // SAFETY: The item is created through the designated
+                // initializer with a nil action; NSMenuItem retains its
+                // submenu and NSMenu retains the item.
+                unsafe {
+                    let allocated: *mut AnyObject = msg_send![objc2::class!(NSMenuItem), alloc];
+                    let pointer: *mut AnyObject = msg_send![allocated,
+                        initWithTitle: title.as_object(),
+                        action: None::<objc2::runtime::Sel>,
+                        keyEquivalent: key.as_object()
+                    ];
+                    let native = Id::from_owned(pointer);
+                    let _: () = msg_send![native.as_object(), setEnabled: enabled];
+                    let _: () = msg_send![native.as_object(), setSubmenu: nested.as_object()];
+                    let _: () = msg_send![menu.as_object(), addItem: native.as_object()];
+                }
+            }
+        }
+    }
+}
+
+fn create_ns_menu_item(
+    item: &MenuItem,
+    ancestors_enabled: bool,
+    target: &Retained<ActionTarget>,
+) -> Id {
+    let title = ns_string(&item.label);
+    let key = ns_string("");
+    // SAFETY: The item is created through the designated initializer and the
+    // selector target has the matching one-argument signature. State value 1
+    // is NSControlStateValueOn, the public checkmark constant.
+    unsafe {
+        let allocated: *mut AnyObject = msg_send![objc2::class!(NSMenuItem), alloc];
+        let pointer: *mut AnyObject = msg_send![allocated,
+            initWithTitle: title.as_object(),
+            action: sel!(performAction:),
+            keyEquivalent: key.as_object()
+        ];
+        let native = Id::from_owned(pointer);
+        let _: () = msg_send![native.as_object(), setTarget: &**target];
+        let _: () =
+            msg_send![native.as_object(), setEnabled: ancestors_enabled && item.enabled];
+        let _: () = msg_send![native.as_object(), setState: isize::from(item.checked)];
+        set_string(native.as_object(), "setToolTip:", &item.help);
+        if let Some(image) = item.symbol.and_then(system_image) {
+            let _: () = msg_send![native.as_object(), setImage: image.as_object()];
+        }
+        if let Some(chord) = item.chord {
+            // The menu displays the chord; app-wide delivery is owned by the
+            // window's accelerator table.
+            apply_menu_item_chord(native.as_object(), chord);
+        }
+        // MenuItemRole::Destructive: AppKit exposes no destructive menu-item
+        // treatment (verified against the macOS 26.5 SDK headers), so the
+        // item keeps the standard native appearance; the role stays in the
+        // model. The resolved fallback contract is documented in
+        // reports/context-menus.
+        native
+    }
 }
 
 fn create_toolbar_search(

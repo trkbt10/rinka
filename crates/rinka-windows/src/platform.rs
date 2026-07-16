@@ -3,10 +3,10 @@
 use crate::{WindowsDiagnostic, validate_element};
 use rinka_core::{
     Align, ApplicationSpec, Axis, ButtonRole, CollectionPattern, ControlSize, Element, ElementKind,
-    EventBindings, InputKind, Justify, ListRowRole, NativeBackend, PanelBehavior, PropertyPatch,
-    Props, Renderer, SortDirection, Spacing, StatusTone, Symbol, TableSort, TextRole,
-    ToolbarAction, ToolbarDisplay, ToolbarItem, ToolbarItemKind, ToolbarMenuEntry, UiPattern,
-    WindowKind, WindowRuntime, WindowSpec,
+    EventBindings, InputKind, Justify, ListRowRole, MenuEntry, NativeBackend, PanelBehavior,
+    PropertyPatch, Props, Renderer, SortDirection, Spacing, StatusTone, Symbol, TableSort,
+    TextRole, ToolbarAction, ToolbarDisplay, ToolbarItem, ToolbarItemKind, UiPattern, WindowKind,
+    WindowRuntime, WindowSpec,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -54,16 +54,16 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CW_USEDEFAULT, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
     DestroyWindow, DispatchMessageW, GWLP_USERDATA, GetClassNameW, GetClientRect, GetMessageW,
     GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, HMENU, IDC_ARROW,
-    IDI_APPLICATION, IsDialogMessageW, IsWindow, LoadCursorW, LoadIconW, MF_GRAYED, MF_SEPARATOR,
-    MF_STRING, MINMAXINFO, MSG, MoveWindow, NONCLIENTMETRICSW, PostQuitMessage, RegisterClassExW,
-    SPI_GETNONCLIENTMETRICS, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL, SetParent,
-    SetWindowLongPtrW, SetWindowTextW, ShowWindow, TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu,
-    TranslateMessage, WM_ACTIVATEAPP, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED,
-    WM_GETMINMAXINFO, WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_NCCREATE, WM_NCDESTROY,
-    WM_SETFONT, WM_SIZE, WNDCLASSEXW, WS_BORDER, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN,
-    WS_CLIPSIBLINGS, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_GROUP, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_SYSMENU, WS_TABSTOP, WS_THICKFRAME,
-    WS_VISIBLE, WS_VSCROLL,
+    IDI_APPLICATION, IsDialogMessageW, IsWindow, LoadCursorW, LoadIconW, MF_CHECKED, MF_GRAYED,
+    MF_SEPARATOR, MF_STRING, MINMAXINFO, MSG, MoveWindow, NONCLIENTMETRICSW, PostQuitMessage,
+    RegisterClassExW, SPI_GETNONCLIENTMETRICS, SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE, SW_SHOWNORMAL,
+    SetParent, SetWindowLongPtrW, SetWindowTextW, ShowWindow, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    TrackPopupMenu, TranslateMessage, WM_ACTIVATEAPP, WM_COMMAND, WM_CREATE, WM_DESTROY,
+    WM_DPICHANGED, WM_GETMINMAXINFO, WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_NCCREATE,
+    WM_NCDESTROY, WM_SETFONT, WM_SIZE, WNDCLASSEXW, WS_BORDER, WS_CAPTION, WS_CHILD,
+    WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_CLIENTEDGE, WS_EX_CONTROLPARENT, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_GROUP, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_SYSMENU,
+    WS_TABSTOP, WS_THICKFRAME, WS_VISIBLE, WS_VSCROLL,
 };
 
 include!("platform/native_types.rs");

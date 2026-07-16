@@ -3,10 +3,10 @@
 use rinka::{
     Accelerator, Align, ApplicationSpec, Axis, ButtonRole, CanvasColor, CanvasPoint, CanvasRect,
     CanvasSize, CollectionPattern, Component, ControlSize, Dispatch, DrawScene, Element,
-    ImageContent, ImageScaling, Justify, KeyChord, LineWidth, PanelBehavior, PointerEvent,
-    PointerPhase, Size, SortDirection, Spacing, StatusTone, Symbol, TableColumn, TableSort,
-    TextRole, ToolbarAction, ToolbarChoice, ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem,
-    ToolbarMenuEntry, ToolbarPlacement, UiPattern, WindowContent, WindowId, WindowKind, WindowSpec,
+    ImageContent, ImageScaling, Justify, KeyChord, LineWidth, MenuEntry, MenuItem, PanelBehavior,
+    PointerEvent, PointerPhase, Size, SortDirection, Spacing, StatusTone, Symbol, TableColumn,
+    TableSort, TextRole, ToolbarAction, ToolbarChoice, ToolbarDisplay, ToolbarGroupDisplay,
+    ToolbarItem, ToolbarPlacement, UiPattern, WindowContent, WindowId, WindowKind, WindowSpec,
     button, canvas, column, image, label, list, list_row, mount_pattern, progress, row, separator,
     spacer, status, toggle,
 };
@@ -393,31 +393,27 @@ fn main_window(scene: Scene) -> WindowSpec {
                     "Sort and group the file list",
                     ToolbarPlacement::Trailing,
                     [
-                        ToolbarMenuEntry::action(
-                            ToolbarAction::new(
-                                "sort-name",
-                                "Name",
-                                Symbol::List,
-                                "Sort by name",
-                                announce("sort-name"),
-                            )
-                            .chord(shortcut("Primary+Shift+N")),
+                        MenuEntry::item(
+                            MenuItem::new("sort-name", "Name", announce("sort-name"))
+                                .symbol(Symbol::List)
+                                .help("Sort by name")
+                                .chord(shortcut("Primary+Shift+N")),
                         ),
-                        ToolbarMenuEntry::action(ToolbarAction::new(
-                            "sort-modified",
-                            "Date Modified",
-                            Symbol::Refresh,
-                            "Sort by modification date",
-                            announce("sort-modified"),
-                        )),
-                        ToolbarMenuEntry::separator(),
-                        ToolbarMenuEntry::action(ToolbarAction::new(
-                            "group-kind",
-                            "Group by Kind",
-                            Symbol::Columns,
-                            "Group files by kind",
-                            announce("group-kind"),
-                        )),
+                        MenuEntry::item(
+                            MenuItem::new(
+                                "sort-modified",
+                                "Date Modified",
+                                announce("sort-modified"),
+                            )
+                            .symbol(Symbol::Refresh)
+                            .help("Sort by modification date"),
+                        ),
+                        MenuEntry::separator(),
+                        MenuEntry::item(
+                            MenuItem::new("group-kind", "Group by Kind", announce("group-kind"))
+                                .symbol(Symbol::Columns)
+                                .help("Group files by kind"),
+                        ),
                     ],
                 ),
                 ToolbarItem::action_group(

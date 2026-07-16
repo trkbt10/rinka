@@ -1,7 +1,7 @@
 //! Declarative native toolbar contracts.
 
 use crate::chord::KeyChord;
-use crate::{ActivateHandler, InputHandler, Symbol};
+use crate::{ActivateHandler, InputHandler, MenuEntry, Symbol};
 use std::fmt;
 use std::rc::Rc;
 
@@ -141,36 +141,6 @@ impl ToolbarChoice {
     }
 }
 
-/// Entry in a toolbar-owned native menu.
-#[derive(Clone)]
-pub enum ToolbarMenuEntry {
-    /// Activatable command.
-    Action(ToolbarAction),
-    /// Native menu separator.
-    Separator,
-}
-
-impl ToolbarMenuEntry {
-    /// Creates an activatable menu command.
-    pub fn action(action: ToolbarAction) -> Self {
-        Self::Action(action)
-    }
-
-    /// Creates a native separator.
-    pub const fn separator() -> Self {
-        Self::Separator
-    }
-}
-
-impl fmt::Debug for ToolbarMenuEntry {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Action(action) => formatter.debug_tuple("Action").field(action).finish(),
-            Self::Separator => formatter.write_str("Separator"),
-        }
-    }
-}
-
 /// Native representation used by a declarative toolbar item.
 #[derive(Clone)]
 pub enum ToolbarItemKind {
@@ -195,12 +165,13 @@ pub enum ToolbarItemKind {
         /// Handler receiving the selected identity.
         on_select: InputHandler,
     },
-    /// Action menu presented by a native menu toolbar item.
+    /// Action menu presented by a native menu toolbar item, described by the
+    /// shared menu vocabulary in [`crate::MenuEntry`].
     Menu {
         /// Platform symbol name.
         symbol: Symbol,
         /// Menu entries in display order.
-        entries: Vec<ToolbarMenuEntry>,
+        entries: Vec<MenuEntry>,
     },
     /// Native toolbar search field.
     Search {
@@ -354,7 +325,7 @@ impl ToolbarItem {
         symbol: Symbol,
         help: impl Into<String>,
         placement: ToolbarPlacement,
-        entries: impl IntoIterator<Item = ToolbarMenuEntry>,
+        entries: impl IntoIterator<Item = MenuEntry>,
     ) -> Self {
         Self {
             id: id.into(),

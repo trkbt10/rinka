@@ -4,11 +4,11 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 use rinka_core::{
     Align, ApplicationSpec, Axis, ButtonMaterial, ButtonRole, CollectionPattern, ControlSize,
-    Element, ElementKind, EventBindings, InputKind, Justify, ListRowRole, MountedNode,
+    Element, ElementKind, EventBindings, InputKind, Justify, ListRowRole, MenuEntry, MountedNode,
     NativeBackend, PanelBehavior, PatternRegion, PropertyPatch, Props, Renderer, SortDirection,
     Spacing, StatusTone, Symbol, TableColumn, TableSort, TextRole, ToolbarAction, ToolbarDisplay,
-    ToolbarGroupDisplay, ToolbarItem, ToolbarItemKind, ToolbarMenuEntry, ToolbarPlacement,
-    UiPattern, WindowKind, WindowRuntime, WindowSpec,
+    ToolbarGroupDisplay, ToolbarItem, ToolbarItemKind, ToolbarPlacement, UiPattern, WindowKind,
+    WindowRuntime, WindowSpec,
 };
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;

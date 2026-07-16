@@ -178,6 +178,7 @@ enum MenuCommand {
     Action {
         label: String,
         enabled: bool,
+        checked: bool,
         events: EventBindings,
     },
     Separator,

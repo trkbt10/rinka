@@ -86,21 +86,13 @@ fn project_toolbar(
                 }
             }
             ToolbarItemKind::Menu { symbol: _, entries } => {
-                for entry in entries {
-                    match entry {
-                        ToolbarMenuEntry::Action(action) => {
-                            push_action(
-                                action,
-                                &mut secondary_commands,
-                                &mut supplementary_controls,
-                                &mut targets,
-                            );
-                        }
-                        ToolbarMenuEntry::Separator => {
-                            secondary_commands.push(ui::app_bar_separator());
-                        }
-                    }
-                }
+                push_menu_entries(
+                    entries,
+                    item.enabled,
+                    &mut secondary_commands,
+                    &mut supplementary_controls,
+                    &mut targets,
+                );
             }
         }
     }
@@ -120,6 +112,57 @@ fn project_toolbar(
         secondary_commands,
         supplementary_controls,
         targets,
+    }
+}
+
+/// Flattens the shared menu vocabulary into app-bar secondary commands.
+///
+/// This adapter's declared strategy projects toolbar menus into the command
+/// bar's secondary command list. Submenu entries are flattened in order and
+/// framed by separators; `ancestors_enabled` folds the enabled state of the
+/// owning item and every enclosing submenu into each command. A checkmark has
+/// no app-bar representation yet and a symbol-less item falls back to the
+/// generic More glyph; both limits are recorded in reports/context-menus.
+fn push_menu_entries(
+    entries: &[MenuEntry],
+    ancestors_enabled: bool,
+    secondary_commands: &mut Vec<ui::CommandBarCommandDef>,
+    supplementary_controls: &mut Vec<ui::Element>,
+    targets: &mut Vec<(String, ToolbarTarget)>,
+) {
+    for entry in entries {
+        match entry {
+            MenuEntry::Item(item) => {
+                let action = ToolbarAction {
+                    id: item.id.clone(),
+                    label: item.label.clone(),
+                    symbol: item.symbol.unwrap_or(CommonSymbol::More),
+                    help: item.help.clone(),
+                    enabled: ancestors_enabled && item.enabled,
+                    on_activate: item.on_activate.clone(),
+                };
+                push_action(
+                    &action,
+                    secondary_commands,
+                    supplementary_controls,
+                    targets,
+                );
+            }
+            MenuEntry::Separator => {
+                secondary_commands.push(ui::app_bar_separator());
+            }
+            MenuEntry::Submenu(submenu) => {
+                secondary_commands.push(ui::app_bar_separator());
+                push_menu_entries(
+                    &submenu.entries,
+                    ancestors_enabled && submenu.enabled,
+                    secondary_commands,
+                    supplementary_controls,
+                    targets,
+                );
+                secondary_commands.push(ui::app_bar_separator());
+            }
+        }
     }
 }
 

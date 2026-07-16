@@ -9,6 +9,7 @@ mod canvas;
 mod chord;
 mod element;
 mod event;
+mod menu;
 mod pattern;
 mod projection;
 mod reconcile;
@@ -37,6 +38,7 @@ pub use element::{
 pub use event::{
     ActivateHandler, EventBindings, InputHandler, PointerHandler, SortHandler, ToggleHandler,
 };
+pub use menu::{MenuEntry, MenuItem, MenuItemRole, Submenu};
 pub use pattern::{PatternRegion, UiPattern};
 pub use projection::{ProjectedHandle, WindowProjection};
 pub use reconcile::{MountedNode, RenderError, RenderStats, Renderer};
@@ -48,7 +50,7 @@ pub use semantics::{
 };
 pub use toolbar::{
     ToolbarAction, ToolbarChoice, ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem,
-    ToolbarItemKind, ToolbarMenuEntry, ToolbarPlacement,
+    ToolbarItemKind, ToolbarPlacement,
 };
 pub use validation::TreeError;
 pub use window::{

@@ -17,6 +17,11 @@ pub enum WindowsDiagnostic {
         /// Stable capability identifier.
         capability: &'static str,
     },
+    /// A declared toolbar capability has no equivalent native Windows control.
+    UnsupportedToolbarCapability {
+        /// Stable capability identifier.
+        capability: &'static str,
+    },
     /// A Win32 operation returned an operating-system error.
     NativeOperation {
         /// Operation that failed.
@@ -40,6 +45,10 @@ impl fmt::Display for WindowsDiagnostic {
             } => write!(
                 formatter,
                 "Windows adapter does not implement {capability} for {element:?}"
+            ),
+            Self::UnsupportedToolbarCapability { capability } => write!(
+                formatter,
+                "Windows adapter does not implement {capability} for the toolbar"
             ),
             Self::NativeOperation { operation, code } => {
                 write!(

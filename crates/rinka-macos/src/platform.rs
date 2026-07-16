@@ -9,12 +9,12 @@ use rinka_core::{
     ButtonRole, CanvasColor, CanvasPoint, CanvasRect, CanvasSize, CanvasVector, CollectionPattern,
     ControlSize, DrawCommand, DrawScene, Element, ElementKind, EventBindings, ImageContent,
     ImageScaling, InputKind, Justify, KeyChord, KeyIdentity, KeyRoutingContext, LineWidth,
-    ListRowRole, Modifiers, MonospaceMetrics, MountedNode, NativeBackend, PanelBehavior,
-    PatternRegion, PointerButton, PointerEvent, PointerModifiers, PointerPhase, PrimaryModifier,
-    PropertyPatch, Props, Renderer, SortDirection, Spacing, StatusTone, Symbol, TableColumn,
-    TableSort, TextRole, ToolbarAction, ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem,
-    ToolbarItemKind, ToolbarMenuEntry, ToolbarPlacement, UiPattern, WindowId, WindowKind,
-    WindowRuntime, WindowSpec,
+    ListRowRole, MenuEntry, MenuItem, Modifiers, MonospaceMetrics, MountedNode, NativeBackend,
+    PanelBehavior, PatternRegion, PointerButton, PointerEvent, PointerModifiers, PointerPhase,
+    PrimaryModifier, PropertyPatch, Props, Renderer, SortDirection, Spacing, StatusTone, Symbol,
+    TableColumn, TableSort, TextRole, ToolbarAction, ToolbarDisplay, ToolbarGroupDisplay,
+    ToolbarItem, ToolbarItemKind, ToolbarPlacement, UiPattern, WindowId, WindowKind, WindowRuntime,
+    WindowSpec,
 };
 use std::cell::{Cell, RefCell};
 use std::error::Error;

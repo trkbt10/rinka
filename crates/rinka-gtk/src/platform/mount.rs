@@ -530,35 +530,7 @@ fn toolbar_expanded_widget(item: &ToolbarItem, display: ToolbarDisplay) -> gtk::
             button.update_property(&[gtk::accessible::Property::Label(&item.label)]);
             let prefix = native_action_name(&item.id);
             let actions = gio::SimpleActionGroup::new();
-            let menu = gio::Menu::new();
-            let mut section = gio::Menu::new();
-            for entry in entries {
-                match entry {
-                    ToolbarMenuEntry::Action(action) => {
-                        let action_name = native_action_name(&action.id);
-                        let detailed_action = format!("{prefix}.{action_name}");
-                        let menu_item =
-                            gio::MenuItem::new(Some(&action.label), Some(&detailed_action));
-                        let icon = gio::ThemedIcon::new(symbol_name(action.symbol));
-                        menu_item.set_icon(&icon);
-                        section.append_item(&menu_item);
-                        let native_action = gio::SimpleAction::new(&action_name, None);
-                        native_action.set_enabled(item.enabled && action.enabled);
-                        let handler = action.on_activate.clone();
-                        native_action.connect_activate(move |_, _| handler());
-                        actions.add_action(&native_action);
-                    }
-                    ToolbarMenuEntry::Separator => {
-                        if section.n_items() > 0 {
-                            menu.append_section(None, &section);
-                            section = gio::Menu::new();
-                        }
-                    }
-                }
-            }
-            if section.n_items() > 0 {
-                menu.append_section(None, &section);
-            }
+            let menu = build_menu_model(&prefix, entries, item.enabled, &actions);
             button.insert_action_group(&prefix, Some(&actions));
             button.set_menu_model(Some(&menu));
             button.upcast()
@@ -581,6 +553,67 @@ fn toolbar_expanded_widget(item: &ToolbarItem, display: ToolbarDisplay) -> gtk::
         }
     };
     widget
+}
+
+/// Builds a `gio::Menu` model from the shared menu vocabulary.
+///
+/// Entries become detailed actions inside `actions` under `prefix`, separators
+/// become section boundaries, and submenus become native nested menus.
+/// `ancestors_enabled` folds the enabled state of the owning control and every
+/// enclosing submenu into each action, matching the semantic contract that a
+/// disabled ancestor also disables its entries. A checked item is backed by a
+/// stateful boolean action so the native menu shows the platform checkmark;
+/// the declarative model stays authoritative for that state.
+fn build_menu_model(
+    prefix: &str,
+    entries: &[MenuEntry],
+    ancestors_enabled: bool,
+    actions: &gio::SimpleActionGroup,
+) -> gio::Menu {
+    let menu = gio::Menu::new();
+    let mut section = gio::Menu::new();
+    for entry in entries {
+        match entry {
+            MenuEntry::Item(item) => {
+                let action_name = native_action_name(&item.id);
+                let detailed_action = format!("{prefix}.{action_name}");
+                let menu_item = gio::MenuItem::new(Some(&item.label), Some(&detailed_action));
+                if let Some(symbol) = item.symbol {
+                    let icon = gio::ThemedIcon::new(symbol_name(symbol));
+                    menu_item.set_icon(&icon);
+                }
+                section.append_item(&menu_item);
+                let native_action = if item.checked {
+                    gio::SimpleAction::new_stateful(&action_name, None, &true.to_variant())
+                } else {
+                    gio::SimpleAction::new(&action_name, None)
+                };
+                native_action.set_enabled(ancestors_enabled && item.enabled);
+                let handler = item.on_activate.clone();
+                native_action.connect_activate(move |_, _| handler());
+                actions.add_action(&native_action);
+            }
+            MenuEntry::Separator => {
+                if section.n_items() > 0 {
+                    menu.append_section(None, &section);
+                    section = gio::Menu::new();
+                }
+            }
+            MenuEntry::Submenu(submenu) => {
+                let nested = build_menu_model(
+                    prefix,
+                    &submenu.entries,
+                    ancestors_enabled && submenu.enabled,
+                    actions,
+                );
+                section.append_submenu(Some(&submenu.label), &nested);
+            }
+        }
+    }
+    if section.n_items() > 0 {
+        menu.append_section(None, &section);
+    }
+    menu
 }
 
 fn toolbar_compact_widget(item: &ToolbarItem, _display: ToolbarDisplay) -> Option<gtk::Widget> {
