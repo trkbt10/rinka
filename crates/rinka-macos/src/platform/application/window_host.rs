@@ -529,6 +529,15 @@ unsafe fn view_geometry_is_valid(view: &AnyObject) -> bool {
         );
         return false;
     }
+    // A native text view manages private internal subviews (for example
+    // NSTextInsertionIndicator, whose caret placeholder legitimately reports
+    // ambiguous layout at a zero frame until the caret is placed). The
+    // structural invariant validated here covers rinka-created views; the
+    // platform control's internals are the platform's own business.
+    let is_text_view: bool = unsafe { msg_send![view, isKindOfClass: objc2::class!(NSTextView)] };
+    if is_text_view {
+        return true;
+    }
     let subviews: *mut AnyObject = unsafe { msg_send![view, subviews] };
     let Some(subviews) = NonNull::new(subviews) else {
         return true;

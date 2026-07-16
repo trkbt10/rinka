@@ -1541,7 +1541,7 @@ fn inspector(model: &ExplorerComponent) -> Element {
         ),
         Scene::Editor => inspector_status(
             "Native editor",
-            "The text area is a native text view; highlighting is computed by this consumer.",
+            "The editor pane is a native text view.",
             StatusTone::Informational,
         ),
     };

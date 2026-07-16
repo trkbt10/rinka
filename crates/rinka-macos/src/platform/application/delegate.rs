@@ -31,6 +31,7 @@ impl ApplicationDelegate {
             scene_probe: RefCell::new(None),
             accelerator_probe: RefCell::new(None),
             clipboard_probe: RefCell::new(None),
+            text_area_probe: RefCell::new(None),
         });
         // SAFETY: NSObject's init signature and ownership convention are stable.
         unsafe { msg_send![super(object), init] }

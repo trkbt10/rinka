@@ -11,6 +11,13 @@
 /// `NSTextStorageEditActions` bit reporting edited characters.
 const TEXT_STORAGE_EDITED_CHARACTERS: usize = 1 << 1;
 
+/// Microseconds since the first probe stamp, for latency diagnostics.
+fn probe_stamp() -> u128 {
+    use std::sync::OnceLock;
+    static EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
+    EPOCH.get_or_init(std::time::Instant::now).elapsed().as_micros()
+}
+
 /// A UTF-16 native range located inside the UTF-8 mirror.
 struct LocatedRange {
     char_range: TextRange,
@@ -219,6 +226,9 @@ struct TextAreaDelegateIvars {
     /// document-wide highlight never costs more than the viewport.
     declared_spans: RefCell<Vec<HighlightSpan>>,
     role: Cell<TextRole>,
+    /// Diagnostic-only: the instant the text-area probe typed, so the edit
+    /// round trip is measured on the causal path instead of by polling.
+    probe_typed_at: Cell<Option<std::time::Instant>>,
 }
 
 impl fmt::Debug for TextAreaDelegateIvars {
@@ -284,31 +294,21 @@ define_class!(
             self.emit_native_selection();
         }
 
-        /// Deferred to the next main-loop turn so event emission never runs
-        /// inside NSTextStorage's edit transaction, and rapid storage edits
-        /// in one turn coalesce into a single delta event.
+        /// Fires when a user edit completes, outside NSTextStorage's edit
+        /// transaction: the recorded delta is reported immediately, without
+        /// waiting for the scheduled run-loop turn.
+        #[unsafe(method(textDidChange:))]
+        fn text_did_change(&self, _notification: &AnyObject) {
+            self.drain_now();
+        }
+
+        /// Backstop for buffer mutations that post no textDidChange (for
+        /// example another component mutating the storage directly): the
+        /// delayed selector drains whatever the change seam recorded. Event
+        /// emission still never runs inside NSTextStorage's edit transaction.
         #[unsafe(method(drainPendingTextEdits:))]
         fn drain_pending_text_edits(&self, _sender: *mut AnyObject) {
-            self.ivars().emission_scheduled.set(false);
-            let edits = std::mem::take(&mut *self.ivars().pending_edits.borrow_mut());
-            let composing = self.has_marked_text();
-            if !edits.is_empty() {
-                let base_revision = self.ivars().revision.get();
-                let revision = base_revision.next_edit();
-                self.ivars().revision.set(revision);
-                self.ivars().events.emit_text_change(TextChange {
-                    base_revision,
-                    revision,
-                    edits,
-                    composing,
-                });
-            }
-            if self.ivars().selection_pending.replace(false) {
-                self.emit_native_selection();
-            }
-            if !composing {
-                self.apply_deferred();
-            }
+            self.drain_now();
         }
     }
 );
@@ -334,6 +334,7 @@ impl TextAreaDelegate {
             spans_revision: Cell::new(None),
             declared_spans: RefCell::new(Vec::new()),
             role: Cell::new(role),
+            probe_typed_at: Cell::new(None),
         });
         // SAFETY: NSObject's init signature and ownership convention are stable.
         unsafe { msg_send![super(object), init] }
@@ -341,6 +342,76 @@ impl TextAreaDelegate {
 
     fn text_view(&self) -> Option<Id> {
         self.ivars().text_view.borrow().clone()
+    }
+
+    /// Reports recorded edits, then the pending selection, then any state
+    /// deferred behind a finished IME composition. Idempotent: an empty
+    /// pending set makes the backstop drain a no-op.
+    fn drain_now(&self) {
+        if std::env::var_os("RINKA_APPKIT_TEXTAREA_PROBE").is_some() {
+            eprintln!("Rinka textarea drain fired stamp={}", probe_stamp());
+        }
+        if std::env::var_os("RINKA_APPKIT_TEXTAREA_SPAN_DUMP").is_some()
+            && let Some(view) = self.text_view()
+        {
+            // Diagnostic-only consistency check between the mirror and the
+            // native backing string.
+            let native = unsafe {
+                let string: *mut AnyObject = msg_send![view.as_object(), string];
+                rust_string(string)
+            };
+            let mirror = self.ivars().mirror.borrow();
+            if *mirror != native {
+                let divergence = mirror
+                    .char_indices()
+                    .zip(native.char_indices())
+                    .find(|((_, ours), (_, theirs))| ours != theirs);
+                eprintln!(
+                    "Rinka textarea MIRROR DIVERGED mirror_len={} native_len={} first_difference={divergence:?}",
+                    mirror.len(),
+                    native.len()
+                );
+            }
+        }
+        self.ivars().emission_scheduled.set(false);
+        let edits = std::mem::take(&mut *self.ivars().pending_edits.borrow_mut());
+        let composing = self.has_marked_text();
+        if !edits.is_empty() {
+            let base_revision = self.ivars().revision.get();
+            let revision = base_revision.next_edit();
+            self.ivars().revision.set(revision);
+            let probing = std::env::var_os("RINKA_APPKIT_TEXTAREA_PROBE").is_some();
+            let started = std::time::Instant::now();
+            self.ivars().events.emit_text_change(TextChange {
+                base_revision,
+                revision,
+                edits,
+                composing,
+            });
+            if probing {
+                // Covers the application's update, its re-render, and the
+                // adapter's echo reconciliation, synchronously.
+                eprintln!(
+                    "Rinka textarea change emit micros={}",
+                    started.elapsed().as_micros()
+                );
+            }
+            if let Some(typed_at) = self.ivars().probe_typed_at.take() {
+                // The causal keystroke round trip: native edit recorded,
+                // emission drained, application updated and re-rendered,
+                // echo reconciled — complete at this point.
+                eprintln!(
+                    "Rinka textarea probe single-edit round-trip micros={}",
+                    typed_at.elapsed().as_micros()
+                );
+            }
+        }
+        if self.ivars().selection_pending.replace(false) {
+            self.emit_native_selection();
+        }
+        if !composing {
+            self.apply_deferred();
+        }
     }
 
     fn has_marked_text(&self) -> bool {
@@ -372,6 +443,12 @@ impl TextAreaDelegate {
             }
         };
         let mut mirror = self.ivars().mirror.borrow_mut();
+        if std::env::var_os("RINKA_APPKIT_TEXTAREA_SPAN_DUMP").is_some() {
+            eprintln!(
+                "Rinka textarea storage edit location={} length={} delta={change_in_length} replacement={replacement:?}",
+                edited_range.location, edited_range.length
+            );
+        }
         let located = isize::try_from(edited_range.length)
             .ok()
             .map(|new_length| new_length - change_in_length)
@@ -410,6 +487,9 @@ impl TextAreaDelegate {
     fn schedule_drain(&self) {
         if self.ivars().emission_scheduled.replace(true) {
             return;
+        }
+        if std::env::var_os("RINKA_APPKIT_TEXTAREA_PROBE").is_some() {
+            eprintln!("Rinka textarea drain scheduled stamp={}", probe_stamp());
         }
         // SAFETY: The delayed selector runs on the main run loop with self
         // retained by the perform request.
@@ -476,6 +556,7 @@ impl TextAreaDelegate {
         };
         let mirror = self.ivars().mirror.borrow();
         let spans = self.ivars().declared_spans.borrow();
+        let probing = std::env::var_os("RINKA_APPKIT_TEXTAREA_PROBE").is_some();
         // SAFETY: Layout, container, and temporary-attribute calls address
         // the live text view's TextKit 1 objects on the main thread.
         unsafe {
@@ -485,6 +566,17 @@ impl TextAreaDelegate {
                 return;
             }
             let visible: Rect = msg_send![view.as_object(), visibleRect];
+            // Right after a whole-document replacement no layout exists yet
+            // and a bounding-rect glyph query would answer with the entire
+            // document; laying out the viewport first keeps the answer — and
+            // therefore the attribute application — viewport-sized.
+            let ensure_started = std::time::Instant::now();
+            let _: () = msg_send![layout,
+                ensureLayoutForBoundingRect: visible,
+                inTextContainer: container
+            ];
+            let ensure_micros = ensure_started.elapsed().as_micros();
+            let query_started = std::time::Instant::now();
             let glyph_range: NSRange = msg_send![layout,
                 glyphRangeForBoundingRect: visible,
                 inTextContainer: container
@@ -493,6 +585,7 @@ impl TextAreaDelegate {
                 characterRangeForGlyphRange: glyph_range,
                 actualGlyphRange: std::ptr::null_mut::<NSRange>()
             ];
+            let query_micros = query_started.elapsed().as_micros();
             let Some(window) = locate_utf16_range(
                 &mirror,
                 window_utf16.location,
@@ -500,6 +593,7 @@ impl TextAreaDelegate {
             ) else {
                 return;
             };
+            let paint_started = std::time::Instant::now();
             let attribute = Id::from_borrowed(FOREGROUND_COLOR_ATTRIBUTE_NAME);
             let _: () = msg_send![layout,
                 removeTemporaryAttribute: attribute.as_object(),
@@ -519,6 +613,27 @@ impl TextAreaDelegate {
                     value: color.as_object(),
                     forCharacterRange: *range
                 ];
+            }
+            if probing {
+                eprintln!(
+                    "Rinka textarea visible-window chars={} applied={} ensure_micros={ensure_micros} query_micros={query_micros} paint_micros={}",
+                    window.char_range.len(),
+                    converted.len(),
+                    paint_started.elapsed().as_micros()
+                );
+                if std::env::var_os("RINKA_APPKIT_TEXTAREA_SPAN_DUMP").is_some() {
+                    let native: *mut AnyObject = msg_send![view.as_object(), string];
+                    for (range, role) in converted.iter().take(8) {
+                        let sub: *mut AnyObject =
+                            msg_send![native, substringWithRange: *range];
+                        eprintln!(
+                            "Rinka textarea span dump utf16=({},{}) role={role:?} native_text={:?}",
+                            range.location,
+                            range.length,
+                            rust_string(sub)
+                        );
+                    }
+                }
             }
         }
     }
@@ -714,6 +829,9 @@ fn apply_text_area(handle: &AppKitHandle, config: TextAreaConfig<'_>) -> Result<
         });
         return Ok(());
     }
+    // This declaration is newer than anything deferred during a composition;
+    // an earlier snapshot applied afterwards would regress the view state.
+    *delegate.ivars().deferred.borrow_mut() = None;
     apply_text_area_content(&delegate, text_view.as_object(), content)?;
     apply_text_area_spans(&delegate, text_view.as_object(), spans);
     apply_text_area_selection(&delegate, text_view.as_object(), selection);

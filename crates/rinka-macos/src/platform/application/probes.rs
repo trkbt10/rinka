@@ -17,6 +17,7 @@ struct ApplicationDelegateIvars {
     scene_probe: RefCell<Option<SceneProbe>>,
     accelerator_probe: RefCell<Option<AcceleratorProbe>>,
     clipboard_probe: RefCell<Option<ClipboardProbe>>,
+    text_area_probe: RefCell<Option<TextAreaProbe>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -337,6 +338,7 @@ define_class!(
             self.begin_accelerator_probe();
             self.begin_context_menu_probe();
             self.begin_clipboard_probe();
+            self.begin_text_area_probe();
         }
 
         #[unsafe(method(runTransitionProbe:))]
@@ -357,6 +359,11 @@ define_class!(
         #[unsafe(method(runClipboardProbe:))]
         fn run_clipboard_probe(&self, _sender: *mut AnyObject) {
             self.advance_clipboard_probe();
+        }
+
+        #[unsafe(method(runTextAreaProbe:))]
+        fn run_text_area_probe(&self, _sender: *mut AnyObject) {
+            self.advance_text_area_probe();
         }
 
         #[unsafe(method(windowDidResize:))]
