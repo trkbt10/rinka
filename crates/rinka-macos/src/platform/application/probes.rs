@@ -373,6 +373,7 @@ define_class!(
         #[unsafe(method(runTextAreaProbe:))]
         fn run_text_area_probe(&self, _sender: *mut AnyObject) {
             self.advance_text_area_probe();
+        }
 
         #[unsafe(method(runDialogProbe:))]
         fn run_dialog_probe(&self, _sender: *mut AnyObject) {

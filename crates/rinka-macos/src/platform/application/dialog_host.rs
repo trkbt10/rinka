@@ -11,15 +11,18 @@ const NS_ALERT_FIRST_BUTTON_RETURN: isize = 1000;
 /// `NSModalResponseOK`.
 const NS_MODAL_RESPONSE_OK: isize = 1;
 
-/// Connects one window's dialog requests to AppKit sheet presentation.
-fn install_dialog_presenter(window: &Id, runtime: &WindowRuntime<AppKitBackend>) {
-    let window = window.clone();
-    runtime.set_dialog_presenter(move |request| {
-        // SAFETY: Dialog requests are delivered by the window runtime's
-        // drain, which the host only drives from AppKit's main thread; the
-        // retained NSWindow outlives its runtime inside the delegate.
-        unsafe { present_dialog_request(window.as_object(), request) };
-    });
+/// Presents one window's dialog requests as AppKit sheets on that window.
+struct AppKitWindowDialogService {
+    window: Id,
+}
+
+impl DialogService for AppKitWindowDialogService {
+    fn present(&self, request: DialogRequest) {
+        // SAFETY: Dialog requests are raised by component updates, which the
+        // host only drives from AppKit's main thread; the retained NSWindow
+        // outlives its runtime inside the application delegate.
+        unsafe { present_dialog_request(self.window.as_object(), request) };
+    }
 }
 
 /// Presents one validated dialog request as a sheet on `window`.

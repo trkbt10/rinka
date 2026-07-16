@@ -2,11 +2,12 @@
 
 use crate::editor::EditorState;
 use rinka::{
-    Accelerator, Align, ApplicationSpec, Axis, ButtonRole, CanvasColor, CanvasPoint, CanvasRect,
-    CanvasSize, ClipboardError, CollectionPattern, Component, ControlSize, Dispatch, DrawScene,
-    Element, ImageContent, ImageScaling, Justify, KeyChord, LineWidth, MenuEntry, MenuItem,
-    PanelBehavior, PointerEvent, PointerPhase, Size, SortDirection, Spacing, StatusTone, Submenu,
-    Symbol, TableColumn, TableSort, TextChange, TextRole, TextSelection, ToolbarAction,
+    Accelerator, Alert, Align, ApplicationSpec, Axis, ButtonRole, CanvasColor, CanvasPoint,
+    CanvasRect, CanvasSize, ClipboardError, CollectionPattern, Component, ControlSize,
+    DialogButtonRole, DialogOutcome, Dispatch, DrawScene, Element, ImageContent, ImageScaling,
+    Justify, KeyChord, LineWidth, MenuEntry, MenuItem, OpenPanelDescription, PanelBehavior,
+    PointerEvent, PointerPhase, SavePanelDescription, Size, SortDirection, Spacing, StatusTone,
+    Submenu, Symbol, TableColumn, TableSort, TextChange, TextRole, TextSelection, ToolbarAction,
     ToolbarChoice, ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem, ToolbarPlacement, UiPattern,
     UpdateContext, WindowContent, WindowId, WindowKind, WindowSpec, button, canvas, column, image,
     label, list, list_row, mount_pattern, progress, row, separator, spacer, status, text_area,
@@ -148,6 +149,8 @@ struct ExplorerComponent {
     preview_bitmaps: Vec<(FileKey, ImageContent)>,
     scaling_probe: ImageContent,
     deleted: Vec<FileKey>,
+    uploads: Vec<PathBuf>,
+    download_target: Option<PathBuf>,
     duplicated: Vec<FileKey>,
     favorite_files: Vec<FileKey>,
     last_file_action: Option<String>,
@@ -189,6 +192,8 @@ impl ExplorerComponent {
             ],
             scaling_probe: scaling_probe_bitmap(),
             deleted: Vec::new(),
+            uploads: Vec::new(),
+            download_target: None,
             duplicated: Vec::new(),
             favorite_files: Vec::new(),
             last_file_action: None,
@@ -287,6 +292,13 @@ enum ExplorerMessage {
     SetSectionExpanded(&'static str, bool),
     SetFileExpanded(FileKey, bool),
     CanvasPointer(PointerEvent),
+    ConfirmDelete(FileKey),
+    DeleteConfirmed(FileKey),
+    DeleteCancelled,
+    RequestUpload,
+    UploadsChosen(Vec<PathBuf>),
+    RequestDownload(FileKey),
+    DownloadTargetChosen(PathBuf),
     RenameFile(FileKey),
     DuplicateFile(FileKey),
     DeleteFile(FileKey),
@@ -341,6 +353,35 @@ impl Component for ExplorerComponent {
             ExplorerMessage::CanvasPointer(event) => self.canvas_pointer = Some(event),
             ExplorerMessage::RenameFile(file) => {
                 self.last_file_action = Some(format!("Rename requested for {}", file_title(file)));
+            }
+            ExplorerMessage::ConfirmDelete(key) => {
+                let Some(record) = file_record_for_key(self, key) else {
+                    return;
+                };
+                // The consumer's iron rule "destructive stays destructive":
+                // Delete carries the destructive role and Cancel receives the
+                // return-key default, so the safe answer is the easy answer.
+                context.dialogs().alert(
+                    Alert::new(
+                        format!("Delete “{}”?", record.title),
+                        format!(
+                            "“{}” will be deleted from {} immediately. This cannot be undone.",
+                            record.title,
+                            self.location.title()
+                        ),
+                    )
+                    .button(
+                        "Delete",
+                        DialogButtonRole::Destructive,
+                        ExplorerMessage::DeleteConfirmed(key),
+                    )
+                    .button(
+                        "Cancel",
+                        DialogButtonRole::Cancel,
+                        ExplorerMessage::DeleteCancelled,
+                    )
+                    .default_button(1),
+                );
             }
             ExplorerMessage::DuplicateFile(file) => {
                 if !self.duplicated.contains(&file) {
@@ -410,12 +451,58 @@ impl Component for ExplorerComponent {
             ExplorerMessage::EditorSelectionChanged(selection) => {
                 self.editor.store_selection(selection);
             }
+            ExplorerMessage::DeleteConfirmed(key) => {
+                if !self.deleted.contains(&key) {
+                    self.deleted.push(key);
+                }
+                if self.selected_file == Some(key) {
+                    self.selected_file = None;
+                }
+                self.last_file_action = Some(format!("Deleted {}", file_title(key)));
+            }
+            ExplorerMessage::DeleteCancelled => {}
+            ExplorerMessage::RequestUpload => {
+                context.dialogs().open_panel(
+                    OpenPanelDescription {
+                        title: Some("Choose files or folders to upload".to_owned()),
+                        choose_files: true,
+                        choose_directories: true,
+                        allows_multiple: true,
+                        starting_directory: panel_starting_directory(),
+                    },
+                    |outcome| match outcome {
+                        DialogOutcome::PathsChosen(paths) => {
+                            Some(ExplorerMessage::UploadsChosen(paths))
+                        }
+                        _ => None,
+                    },
+                );
+            }
+            ExplorerMessage::UploadsChosen(paths) => self.uploads = paths,
+            ExplorerMessage::RequestDownload(key) => {
+                let Some(record) = file_record_for_key(self, key) else {
+                    return;
+                };
+                context.dialogs().save_panel(
+                    SavePanelDescription {
+                        title: Some(format!("Choose where to download “{}”", record.title)),
+                        suggested_filename: Some(record.title.to_owned()),
+                        starting_directory: panel_starting_directory(),
+                    },
+                    |outcome| match outcome {
+                        DialogOutcome::SavePathChosen(path) => {
+                            Some(ExplorerMessage::DownloadTargetChosen(path))
+                        }
+                        _ => None,
+                    },
+                );
+            }
+            ExplorerMessage::DownloadTargetChosen(path) => self.download_target = Some(path),
             ExplorerMessage::EditorSetReadOnly(read_only) => self.editor.set_read_only(read_only),
             ExplorerMessage::EditorJumpEnd => self.editor.jump_to_end(),
             ExplorerMessage::EditorRehighlight => self.editor.rehighlight_all(),
             ExplorerMessage::EditorReload => self.editor.reload(),
         }
-        Effects::none()
     }
 
     fn view(&self, dispatch: Dispatch<Self::Message>) -> Element {
@@ -440,6 +527,11 @@ const fn file_title(key: FileKey) -> &'static str {
         FileKey::Preview => "design-preview.png",
         FileKey::HiddenEnvironment => ".env",
     }
+}
+
+/// Reads the deterministic panel starting directory for probe runs.
+fn panel_starting_directory() -> Option<PathBuf> {
+    std::env::var_os("RINKA_EXPLORER_PANEL_DIR").map(PathBuf::from)
 }
 
 /// Resolves clipboard text back to a known location for paste navigation.
@@ -1295,10 +1387,7 @@ fn file_row(
     .context_menu(file_context_menu(record, model, &dispatch))
     .with_key(format!("file-{:?}", record.key));
 
-    let children = child_file_records(record.key)
-        .into_iter()
-        .filter(|child| !model.deleted.contains(&child.key))
-        .collect::<Vec<_>>();
+    let children = child_file_records(model, record.key);
     if !children.is_empty() {
         let expanded = match record.key {
             FileKey::Src => model.src_expanded,
@@ -1387,7 +1476,7 @@ fn file_records(model: &ExplorerComponent) -> Vec<FileRecord> {
 
 fn child_file_records(model: &ExplorerComponent, parent: FileKey) -> Vec<FileRecord> {
     let mut children = child_file_catalog(parent);
-    children.retain(|record| !model.deleted_files.contains(&record.key));
+    children.retain(|record| !model.deleted.contains(&record.key));
     children
 }
 
@@ -1703,8 +1792,11 @@ const fn connection_status(scene: Scene) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{Component, ExplorerComponent, ExplorerMessage, Location, Scene, application};
-    use rinka::{Dispatch, PlatformServices, UpdateContext};
-    use rinka_headless::FakeClipboard;
+    use rinka::{
+        DialogButtonRole, DialogDescription, DialogOutcome, Dispatch, PlatformServices, Renderer,
+        UpdateContext, WindowContent, WindowRuntime,
+    };
+    use rinka_headless::{FakeClipboard, FakeDialogPresenter, HeadlessBackend};
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -1738,6 +1830,28 @@ mod tests {
             };
             component.update(message, context);
         }
+    }
+
+    fn mounted_explorer() -> (
+        WindowRuntime<HeadlessBackend>,
+        FakeDialogPresenter,
+        rinka::EventBindings,
+    ) {
+        let presenter = FakeDialogPresenter::new();
+        let runtime = WindowRuntime::mount(
+            Renderer::new(HeadlessBackend::new()),
+            WindowContent::component(ExplorerComponent::new(Scene::Ready)),
+            PlatformServices::default().with_dialog_service(presenter.clone()),
+        )
+        .expect("initial mount");
+        let delete_events = runtime.with_renderer(|renderer| {
+            let backend = renderer.backend();
+            let handle = backend
+                .find_by_key("delete-file")
+                .expect("delete button is mounted for the selected file");
+            backend.events_of(handle).expect("delete button has events")
+        });
+        (runtime, presenter, delete_events)
     }
 
     #[test]

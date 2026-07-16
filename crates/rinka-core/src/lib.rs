@@ -9,7 +9,6 @@ mod canvas;
 mod chord;
 mod clipboard;
 mod dialog;
-mod effect;
 mod element;
 mod event;
 mod menu;
@@ -38,10 +37,10 @@ pub use chord::{
 };
 pub use clipboard::{Clipboard, ClipboardError, ClipboardFlavor, ClipboardService};
 pub use dialog::{
-    AlertDescription, DialogButton, DialogButtonRole, DialogDescription, DialogError,
-    DialogOutcome, DialogRequest, DialogResponder, OpenPanelDescription, SavePanelDescription,
+    Alert, AlertDescription, DialogButton, DialogButtonRole, DialogDescription, DialogError,
+    DialogOutcome, DialogRequest, DialogResponder, DialogService, Dialogs, OpenPanelDescription,
+    SavePanelDescription,
 };
-pub use effect::{Alert, Effect, Effects};
 pub use element::{
     Element, Key, button, canvas, column, image, input, label, list, list_row, mount_pattern,
     progress, row, scroll, separator, spacer, status, text_area, toggle,

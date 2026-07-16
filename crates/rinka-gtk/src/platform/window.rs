@@ -13,6 +13,10 @@ fn build_window(
         WindowKind::Panel(_) => LayoutContext::AuxiliaryPanel,
         WindowKind::Main | WindowKind::Preferences => LayoutContext::Standard,
     };
+    // The GTK host injects no dialog service yet: a component raising a
+    // dialog surfaces the typed RenderError::Dialog(NoPresenter) through the
+    // runtime instead of a silent substitute. The adw::AlertDialog and
+    // GtkFileDialog realization is tracked in reports/dialogs-and-sheets.
     let runtime = WindowRuntime::mount(
         Renderer::new(GtkBackend::new(&root, layout_context)),
         spec.content.clone(),

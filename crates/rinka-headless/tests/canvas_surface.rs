@@ -212,7 +212,6 @@ impl Component for CrosshairComponent {
 
     fn update(&mut self, message: Self::Message, _context: &UpdateContext<Self::Message>) {
         self.pointer = Some(message);
-        Effects::none()
     }
 
     fn view(&self, dispatch: Dispatch<Self::Message>) -> Element {

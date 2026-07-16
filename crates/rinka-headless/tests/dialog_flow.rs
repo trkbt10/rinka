@@ -1,10 +1,11 @@
-//! Consumer tests for the dialog effect channel and the fake presenter.
+//! Consumer tests for the dialog service channel and the fake presenter.
 
 use rinka_core::{
     Alert, AppRuntime, Component, DialogButton, DialogButtonRole, DialogDescription, DialogError,
-    DialogOutcome, Dispatch, Effects, Element, MountedNode, OpenPanelDescription, ProjectedHandle,
-    Props, RenderError, Renderer, SavePanelDescription, WindowContent, WindowProjection,
-    WindowRuntime, button, column, label,
+    DialogOutcome, DialogRequest, DialogService, Dispatch, Element, MountedNode,
+    OpenPanelDescription, PlatformServices, ProjectedHandle, Props, RenderError, Renderer,
+    SavePanelDescription, UpdateContext, WindowContent, WindowProjection, WindowRuntime, button,
+    column, label,
 };
 use rinka_headless::{FakeDialogPresenter, HeadlessBackend};
 use std::cell::Cell;
@@ -27,10 +28,10 @@ enum DocumentMessage {
 impl Component for DirtyDocument {
     type Message = DocumentMessage;
 
-    fn update(&mut self, message: Self::Message) -> Effects<Self::Message> {
+    fn update(&mut self, message: Self::Message, context: &UpdateContext<Self::Message>) {
         match message {
             DocumentMessage::RequestClose => {
-                return Effects::alert(
+                context.dialogs().alert(
                     Alert::new("Save changes?", "Unsaved edits will be lost.")
                         .button("Save", DialogButtonRole::Standard, DocumentMessage::Save)
                         .button(
@@ -50,7 +51,6 @@ impl Component for DirtyDocument {
             DocumentMessage::Discard => self.state = "discarded",
             DocumentMessage::CancelClose => self.state = "editing",
         }
-        Effects::none()
     }
 
     fn view(&self, dispatch: Dispatch<Self::Message>) -> Element {
@@ -91,9 +91,9 @@ fn a_confirm_flow_round_trips_the_chosen_button_message() {
     let runtime = AppRuntime::mount(
         Renderer::new(HeadlessBackend::new()),
         DirtyDocument { state: "editing" },
+        PlatformServices::default().with_dialog_service(presenter.clone()),
     )
     .expect("initial mount");
-    runtime.set_dialog_presenter(presenter.handler());
 
     activate(&runtime, "close");
 
@@ -134,13 +134,13 @@ struct DestructiveDefault;
 impl Component for DestructiveDefault {
     type Message = ();
 
-    fn update(&mut self, (): Self::Message) -> Effects<Self::Message> {
-        Effects::alert(
+    fn update(&mut self, (): Self::Message, context: &UpdateContext<Self::Message>) {
+        context.dialogs().alert(
             Alert::new("Delete?", "This cannot be undone.")
                 .button("Delete", DialogButtonRole::Destructive, ())
                 .button("Cancel", DialogButtonRole::Cancel, ())
                 .default_button(0),
-        )
+        );
     }
 
     fn view(&self, dispatch: Dispatch<Self::Message>) -> Element {
@@ -152,9 +152,12 @@ impl Component for DestructiveDefault {
 #[test]
 fn a_destructive_return_key_default_is_rejected_with_a_typed_error() {
     let presenter = FakeDialogPresenter::new();
-    let runtime = AppRuntime::mount(Renderer::new(HeadlessBackend::new()), DestructiveDefault)
-        .expect("initial mount");
-    runtime.set_dialog_presenter(presenter.handler());
+    let runtime = AppRuntime::mount(
+        Renderer::new(HeadlessBackend::new()),
+        DestructiveDefault,
+        PlatformServices::default().with_dialog_service(presenter.clone()),
+    )
+    .expect("initial mount");
 
     let events = runtime.with_renderer(|renderer| {
         let backend = renderer.backend();
@@ -174,10 +177,11 @@ fn a_destructive_return_key_default_is_rejected_with_a_typed_error() {
 }
 
 #[test]
-fn a_dialog_request_without_a_presenter_is_a_typed_error_and_still_renders() {
+fn a_dialog_request_without_a_service_is_a_typed_error_and_still_renders() {
     let runtime = AppRuntime::mount(
         Renderer::new(HeadlessBackend::new()),
         DirtyDocument { state: "editing" },
+        PlatformServices::default(),
     )
     .expect("initial mount");
 
@@ -208,13 +212,13 @@ enum PickerMessage {
 impl Component for ProjectPicker {
     type Message = PickerMessage;
 
-    fn update(&mut self, message: Self::Message) -> Effects<Self::Message> {
+    fn update(&mut self, message: Self::Message, context: &UpdateContext<Self::Message>) {
         match message {
             PickerMessage::RequestOpen => {
                 // Structural churn in the same update that requests the
                 // dialog: the request must not corrupt this reconciliation.
                 self.requests += 1;
-                return Effects::open_panel(
+                context.dialogs().open_panel(
                     OpenPanelDescription {
                         title: Some("Choose project files".to_owned()),
                         choose_files: true,
@@ -230,7 +234,7 @@ impl Component for ProjectPicker {
             }
             PickerMessage::RequestSave => {
                 self.requests += 1;
-                return Effects::save_panel(
+                context.dialogs().save_panel(
                     SavePanelDescription {
                         title: None,
                         suggested_filename: Some("export.json".to_owned()),
@@ -245,7 +249,6 @@ impl Component for ProjectPicker {
             PickerMessage::Opened(paths) => self.opened = paths,
             PickerMessage::SavedTo(path) => self.saved_to = Some(path),
         }
-        Effects::none()
     }
 
     fn view(&self, dispatch: Dispatch<Self::Message>) -> Element {
@@ -307,16 +310,18 @@ fn open_and_save_panels_round_trip_paths_as_messages() {
     // The projection is the same mounted surface the WinUI host consumes, so
     // this proves the dialog channel through the adapter-facing contract.
     let presenter = FakeDialogPresenter::new();
-    let projection = WindowProjection::mount(WindowContent::component(ProjectPicker {
-        opened: Vec::new(),
-        saved_to: None,
-        requests: 0,
-    }))
+    let projection = WindowProjection::mount(
+        WindowContent::component(ProjectPicker {
+            opened: Vec::new(),
+            saved_to: None,
+            requests: 0,
+        }),
+        PlatformServices::default().with_dialog_service(presenter.clone()),
+    )
     .expect("initial mount");
     let reconciled = Rc::new(Cell::new(0_u32));
     let observed = reconciled.clone();
     projection.set_reconciled_handler(move || observed.set(observed.get() + 1));
-    projection.set_dialog_presenter(presenter.handler());
 
     let open_events = projection
         .with_root(|root| {
@@ -328,7 +333,7 @@ fn open_and_save_panels_round_trip_paths_as_messages() {
         .expect("projection has a root");
     open_events.emit_activate();
 
-    // The request reconciled its own structural churn before presentation.
+    // The request's own structural churn reconciled cleanly.
     assert_eq!(reconciled.get(), 1);
     assert_eq!(presenter.presented_count(), 1);
     let Some(DialogDescription::OpenPanel(panel)) = presenter.description(0) else {
@@ -384,9 +389,9 @@ fn a_cancelled_panel_delivers_no_message_and_keeps_the_tree_consistent() {
             saved_to: None,
             requests: 0,
         }),
+        PlatformServices::default().with_dialog_service(presenter.clone()),
     )
     .expect("initial mount");
-    runtime.set_dialog_presenter(presenter.handler());
 
     let events = runtime.with_renderer(|renderer| {
         let backend = renderer.backend();
@@ -409,7 +414,7 @@ fn a_cancelled_panel_delivers_no_message_and_keeps_the_tree_consistent() {
 }
 
 /// A wizard whose first answer immediately raises a second confirmation,
-/// proving a synchronously answered dialog cannot re-enter reconciliation.
+/// proving a synchronously answered dialog cannot re-enter the component.
 struct ChainedWizard {
     stage: &'static str,
 }
@@ -424,11 +429,11 @@ enum WizardMessage {
 impl Component for ChainedWizard {
     type Message = WizardMessage;
 
-    fn update(&mut self, message: Self::Message) -> Effects<Self::Message> {
+    fn update(&mut self, message: Self::Message, context: &UpdateContext<Self::Message>) {
         match message {
             WizardMessage::Start => {
                 self.stage = "asking-first";
-                Effects::alert(
+                context.dialogs().alert(
                     Alert::new("First?", "Step one.")
                         .button(
                             "Continue",
@@ -436,11 +441,11 @@ impl Component for ChainedWizard {
                             WizardMessage::FirstConfirmed,
                         )
                         .default_button(0),
-                )
+                );
             }
             WizardMessage::FirstConfirmed => {
                 self.stage = "asking-second";
-                Effects::alert(
+                context.dialogs().alert(
                     Alert::new("Second?", "Step two.")
                         .button(
                             "Finish",
@@ -448,12 +453,9 @@ impl Component for ChainedWizard {
                             WizardMessage::SecondConfirmed,
                         )
                         .default_button(0),
-                )
+                );
             }
-            WizardMessage::SecondConfirmed => {
-                self.stage = "done";
-                Effects::none()
-            }
+            WizardMessage::SecondConfirmed => self.stage = "done",
         }
     }
 
@@ -469,23 +471,31 @@ impl Component for ChainedWizard {
     }
 }
 
+/// A service answering every alert immediately from inside `present` — the
+/// most hostile re-entrancy a platform host could exhibit.
+struct ImmediateAnswer {
+    answered: Rc<Cell<u32>>,
+}
+
+impl DialogService for ImmediateAnswer {
+    fn present(&self, request: DialogRequest) {
+        self.answered.set(self.answered.get() + 1);
+        let (_, responder) = request.into_parts();
+        responder.deliver(DialogOutcome::ButtonChosen(0));
+    }
+}
+
 #[test]
-fn a_synchronously_answered_dialog_chains_without_corrupting_the_tree() {
-    // This presenter answers every alert immediately from inside the
-    // presentation callback — the most hostile re-entrancy a platform host
-    // could exhibit.
+fn a_synchronously_answered_dialog_chains_without_reentering_the_component() {
     let answered = Rc::new(Cell::new(0_u32));
-    let observed = answered.clone();
     let runtime = AppRuntime::mount(
         Renderer::new(HeadlessBackend::new()),
         ChainedWizard { stage: "idle" },
+        PlatformServices::default().with_dialog_service(ImmediateAnswer {
+            answered: answered.clone(),
+        }),
     )
     .expect("initial mount");
-    runtime.set_dialog_presenter(move |request| {
-        observed.set(observed.get() + 1);
-        let (_, responder) = request.into_parts();
-        responder.deliver(DialogOutcome::ButtonChosen(0));
-    });
 
     let events = runtime.with_renderer(|renderer| {
         let backend = renderer.backend();
@@ -496,6 +506,40 @@ fn a_synchronously_answered_dialog_chains_without_corrupting_the_tree() {
 
     assert_eq!(answered.get(), 2);
     assert_eq!(runtime.with_component(|wizard| wizard.stage), "done");
+    runtime.with_renderer(|renderer| {
+        let backend = renderer.backend();
+        let handle = backend.find_by_key("stage").expect("stage label");
+        assert!(matches!(
+            backend.props_of(handle),
+            Some(Props::Label { text, .. }) if text == "stage=done"
+        ));
+    });
+    assert!(runtime.take_error().is_none());
+}
+
+/// The same hostile synchronous answer through the queued window-content
+/// dispatch: `WindowContent::component` must apply the chained messages
+/// after the running update returns, never re-entering the component.
+#[test]
+fn window_content_survives_a_synchronous_answer_mid_update() {
+    let answered = Rc::new(Cell::new(0_u32));
+    let runtime = WindowRuntime::mount(
+        Renderer::new(HeadlessBackend::new()),
+        WindowContent::component(ChainedWizard { stage: "idle" }),
+        PlatformServices::default().with_dialog_service(ImmediateAnswer {
+            answered: answered.clone(),
+        }),
+    )
+    .expect("initial mount");
+
+    let events = runtime.with_renderer(|renderer| {
+        let backend = renderer.backend();
+        let handle = backend.find_by_key("start").expect("start button");
+        backend.events_of(handle).expect("start events")
+    });
+    events.emit_activate();
+
+    assert_eq!(answered.get(), 2);
     runtime.with_renderer(|renderer| {
         let backend = renderer.backend();
         let handle = backend.find_by_key("stage").expect("stage label");

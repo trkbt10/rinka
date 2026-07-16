@@ -1,6 +1,6 @@
 //! Component state and queued message delivery.
 
-use crate::dialog::{DialogError, DialogRequest};
+use crate::dialog::{DialogErrorReport, Dialogs};
 use crate::{
     Clipboard, Element, ElementKind, NativeBackend, PlatformServices, RenderContext, RenderError,
     Renderer, TreeError, WindowContent,
@@ -15,33 +15,50 @@ pub trait Component {
     /// Message accepted by the state transition function.
     type Message: 'static;
 
-    /// Applies one message, reaching platform services through the context.
+    /// Applies one message; platform capabilities are reached through the
+    /// update context's injected services.
     fn update(&mut self, message: Self::Message, context: &UpdateContext<Self::Message>);
 
     /// Describes the current native UI tree.
     fn view(&self, dispatch: Dispatch<Self::Message>) -> Element;
 }
 
-/// Capabilities available while one message is applied: follow-up dispatch
-/// and the mounting host's platform services.
+/// Per-update capability context handed to [`Component::update`].
 ///
-/// The runtimes queue messages emitted during a running update and apply
-/// them, in emission order, after it returns — so a service completion that
-/// dispatches synchronously (the macOS pasteboard read, the headless fake)
-/// can never re-enter `update`.
+/// The context carries the component's own [`Dispatch`] and the host's
+/// injected [`PlatformServices`]. Message delivery is queue-based: a message
+/// emitted while an update runs — including a synchronously answered dialog
+/// outcome — is applied after the current update returns, never re-entering
+/// the component.
 pub struct UpdateContext<M> {
     dispatch: Dispatch<M>,
-    services: PlatformServices,
+    services: Rc<PlatformServices>,
+    report_dialog_error: DialogErrorReport,
 }
 
-impl<M> UpdateContext<M> {
-    /// Creates a context; runtimes build one per message, tests build their
-    /// own over a recording dispatch and fake services.
+impl<M: 'static> UpdateContext<M> {
+    /// Creates a context over a recording dispatch and fake services.
+    ///
+    /// Runtimes build one per message through [`Self::for_runtime`]; tests
+    /// build their own with this constructor. A dialog error raised without
+    /// a runtime is discarded, matching the runtime-less snapshot path.
     pub fn new(dispatch: Dispatch<M>, services: PlatformServices) -> Self {
-        Self { dispatch, services }
+        Self::for_runtime(dispatch, Rc::new(services), Rc::new(|_| {}))
     }
 
-    /// Returns the sender that queues follow-up messages.
+    pub(crate) fn for_runtime(
+        dispatch: Dispatch<M>,
+        services: Rc<PlatformServices>,
+        report_dialog_error: DialogErrorReport,
+    ) -> Self {
+        Self {
+            dispatch,
+            services,
+            report_dialog_error,
+        }
+    }
+
+    /// Message sender for follow-up messages from this update.
     pub fn dispatch(&self) -> &Dispatch<M> {
         &self.dispatch
     }
@@ -54,6 +71,15 @@ impl<M> UpdateContext<M> {
     /// Returns the platform clipboard.
     pub fn clipboard(&self) -> &Clipboard {
         self.services.clipboard()
+    }
+
+    /// Window-modal dialog presentation through the host's injected service.
+    pub fn dialogs(&self) -> Dialogs<'_, M> {
+        Dialogs::new(
+            self.services.dialog_service(),
+            &self.dispatch,
+            &self.report_dialog_error,
+        )
     }
 }
 
@@ -95,9 +121,6 @@ impl<M> Clone for Dispatch<M> {
     }
 }
 
-/// Host-installed window-modal dialog presenter shared by runtime clones.
-type SharedDialogPresenter = Rc<dyn Fn(DialogRequest)>;
-
 /// Non-owning message sender used to break dispatch reference cycles.
 pub(crate) struct WeakDispatch<M>(Weak<dyn Fn(M)>);
 
@@ -118,7 +141,7 @@ struct RuntimeInner<B: NativeBackend, C: Component> {
     component: RefCell<C>,
     queue: RefCell<VecDeque<C::Message>>,
     processing: Cell<bool>,
-    services: PlatformServices,
+    services: Rc<PlatformServices>,
     last_error: RefCell<Option<RenderError<B::Error>>>,
 }
 
@@ -128,8 +151,8 @@ pub struct AppRuntime<B: NativeBackend, C: Component> {
 }
 
 impl<B: NativeBackend + 'static, C: Component + 'static> AppRuntime<B, C> {
-    /// Mounts a component over a host's services and performs the first
-    /// render.
+    /// Mounts a component with the host's injected platform services and
+    /// performs the first render.
     pub fn mount(
         renderer: Renderer<B>,
         component: C,
@@ -140,20 +163,12 @@ impl<B: NativeBackend + 'static, C: Component + 'static> AppRuntime<B, C> {
             component: RefCell::new(component),
             queue: RefCell::new(VecDeque::new()),
             processing: Cell::new(false),
-            services,
+            services: Rc::new(services),
             last_error: RefCell::new(None),
         });
         let runtime = Self { inner };
         runtime.render_current()?;
         Ok(runtime)
-    }
-
-    /// Installs the host's window-modal dialog presenter.
-    ///
-    /// Without a presenter, a dialog request is recorded as a typed
-    /// [`RenderError::Dialog`] instead of being silently dropped.
-    pub fn set_dialog_presenter(&self, presenter: impl Fn(DialogRequest) + 'static) {
-        *self.inner.presenter.borrow_mut() = Some(Rc::new(presenter));
     }
 
     fn dispatch(weak: Weak<RuntimeInner<B, C>>) -> Dispatch<C::Message> {
@@ -166,6 +181,19 @@ impl<B: NativeBackend + 'static, C: Component + 'static> AppRuntime<B, C> {
         }))
     }
 
+    fn update_context(inner: &Rc<RuntimeInner<B, C>>) -> UpdateContext<C::Message> {
+        let error_slot = Rc::downgrade(inner);
+        UpdateContext::for_runtime(
+            Self::dispatch(Rc::downgrade(inner)),
+            inner.services.clone(),
+            Rc::new(move |error| {
+                if let Some(inner) = error_slot.upgrade() {
+                    *inner.last_error.borrow_mut() = Some(RenderError::Dialog(error));
+                }
+            }),
+        )
+    }
+
     fn drain(inner: &Rc<RuntimeInner<B, C>>) {
         if inner.processing.replace(true) {
             return;
@@ -175,45 +203,17 @@ impl<B: NativeBackend + 'static, C: Component + 'static> AppRuntime<B, C> {
             let Some(message) = message else {
                 break;
             };
-            let context =
-                UpdateContext::new(Self::dispatch(Rc::downgrade(inner)), inner.services.clone());
+            let context = Self::update_context(inner);
             inner.component.borrow_mut().update(message, &context);
             let dispatch = Self::dispatch(Rc::downgrade(inner));
             let next = inner.component.borrow().view(dispatch);
             if let Err(error) = inner.renderer.borrow_mut().render(next) {
-                // The runtime is in an error state: pending messages and the
-                // update's requested effects are dropped together, with the
-                // error retained for the host.
                 inner.queue.borrow_mut().clear();
                 *inner.last_error.borrow_mut() = Some(error);
                 break;
             }
-            if !effects.is_empty() {
-                // Effects are delivered only after their update's render has
-                // settled, so a presented dialog can never observe or mutate
-                // a half-reconciled tree.
-                let redispatch = Self::dispatch(Rc::downgrade(inner));
-                for request in effects.erase(&redispatch) {
-                    Self::deliver_dialog_request(inner, request);
-                }
-            }
         }
         inner.processing.set(false);
-    }
-
-    fn deliver_dialog_request(inner: &Rc<RuntimeInner<B, C>>, request: DialogRequest) {
-        if let Some(error) = request.description().validity_error() {
-            *inner.last_error.borrow_mut() = Some(RenderError::Dialog(error));
-            return;
-        }
-        let presenter = inner.presenter.borrow().clone();
-        match presenter {
-            Some(presenter) => presenter(request),
-            None => {
-                *inner.last_error.borrow_mut() =
-                    Some(RenderError::Dialog(DialogError::NoPresenter));
-            }
-        }
     }
 
     fn render_current(&self) -> Result<(), RenderError<B::Error>> {
@@ -268,9 +268,7 @@ struct WindowRuntimeInner<B: NativeBackend> {
     root_kind: Cell<Option<ElementKind>>,
     rendering: Cell<bool>,
     pending: Cell<bool>,
-    services: PlatformServices,
     reconciled: RefCell<Option<Rc<dyn Fn()>>>,
-    presenter: RefCell<Option<SharedDialogPresenter>>,
     last_error: RefCell<Option<RenderError<B::Error>>>,
 }
 
@@ -280,13 +278,14 @@ pub struct WindowRuntime<B: NativeBackend> {
 }
 
 impl<B: NativeBackend + 'static> WindowRuntime<B> {
-    /// Mounts window content over a host's services and performs the first
-    /// reconciliation.
+    /// Mounts window content with the host's injected platform services and
+    /// performs the first reconciliation.
     pub fn mount(
         renderer: Renderer<B>,
         content: WindowContent,
         services: PlatformServices,
     ) -> Result<Self, RenderError<B::Error>> {
+        content.install_services(services);
         let runtime = Self {
             inner: Rc::new(WindowRuntimeInner {
                 renderer: RefCell::new(renderer),
@@ -294,9 +293,7 @@ impl<B: NativeBackend + 'static> WindowRuntime<B> {
                 root_kind: Cell::new(None),
                 rendering: Cell::new(false),
                 pending: Cell::new(false),
-                services,
                 reconciled: RefCell::new(None),
-                presenter: RefCell::new(None),
                 last_error: RefCell::new(None),
             }),
         };
@@ -304,26 +301,15 @@ impl<B: NativeBackend + 'static> WindowRuntime<B> {
         Ok(runtime)
     }
 
-    /// Installs the host's window-modal dialog presenter.
-    ///
-    /// Without a presenter, a dialog request is recorded as a typed
-    /// [`RenderError::Dialog`] instead of being silently dropped.
-    pub fn set_dialog_presenter(&self, presenter: impl Fn(DialogRequest) + 'static) {
-        *self.inner.presenter.borrow_mut() = Some(Rc::new(presenter));
-    }
-
     fn context(inner: &Rc<WindowRuntimeInner<B>>) -> RenderContext {
         let weak = Rc::downgrade(inner);
-        RenderContext::new(
-            move || {
-                let Some(inner) = weak.upgrade() else {
-                    return;
-                };
-                inner.pending.set(true);
-                Self::drain(&inner);
-            },
-            inner.services.clone(),
-        )
+        RenderContext::new(move || {
+            let Some(inner) = weak.upgrade() else {
+                return;
+            };
+            inner.pending.set(true);
+            Self::drain(&inner);
+        })
     }
 
     fn drain(inner: &Rc<WindowRuntimeInner<B>>) {
@@ -333,47 +319,27 @@ impl<B: NativeBackend + 'static> WindowRuntime<B> {
         while inner.pending.replace(false) {
             let context = Self::context(inner);
             let next = inner.content.render(context);
-            match Self::reconcile(inner, next) {
+            let result = Self::reconcile(inner, next);
+            // Dialog presentation failures recorded by the drained updates
+            // become the same typed error channel reconciliation uses.
+            if let Some(error) = inner.content.take_dialog_error() {
+                *inner.last_error.borrow_mut() = Some(RenderError::Dialog(error));
+            }
+            match result {
                 Ok(()) => {
                     let reconciled = inner.reconciled.borrow().clone();
                     if let Some(reconciled) = reconciled {
                         reconciled();
                     }
-                    // Dialog requests queued by the drained updates are
-                    // delivered only after their reconciliation settled; a
-                    // synchronously answered dialog re-marks `pending` and the
-                    // loop renders again before delivering the next batch.
-                    Self::deliver_dialog_requests(inner);
                 }
                 Err(error) => {
-                    // The runtime is in an error state: the update's queued
-                    // dialog requests are dropped together with the render,
-                    // with the error retained for the host.
                     inner.pending.set(false);
-                    inner.content.clear_dialog_requests();
                     *inner.last_error.borrow_mut() = Some(error);
                     break;
                 }
             }
         }
         inner.rendering.set(false);
-    }
-
-    fn deliver_dialog_requests(inner: &Rc<WindowRuntimeInner<B>>) {
-        for request in inner.content.take_dialog_requests() {
-            if let Some(error) = request.description().validity_error() {
-                *inner.last_error.borrow_mut() = Some(RenderError::Dialog(error));
-                continue;
-            }
-            let presenter = inner.presenter.borrow().clone();
-            match presenter {
-                Some(presenter) => presenter(request),
-                None => {
-                    *inner.last_error.borrow_mut() =
-                        Some(RenderError::Dialog(DialogError::NoPresenter));
-                }
-            }
-        }
     }
 
     fn render_now(&self) -> Result<(), RenderError<B::Error>> {

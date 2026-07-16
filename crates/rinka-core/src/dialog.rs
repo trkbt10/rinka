@@ -1,14 +1,17 @@
 //! Window-modal dialog descriptions, outcomes, and typed validation.
 //!
 //! A dialog is declared as data, requested from [`crate::Component::update`]
-//! through [`crate::Effects`], presented window-modally by the platform host,
-//! and answered with an ordinary component message. The core never draws a
+//! through [`crate::UpdateContext::dialogs`], presented window-modally by the
+//! host's injected [`DialogService`], and answered with an ordinary component
+//! message delivered through the queued dispatch path. The core never draws a
 //! dialog; it validates the description and hands a type-erased
-//! [`DialogRequest`] to the host's installed presenter.
+//! [`DialogRequest`] to the service.
 
+use crate::runtime::Dispatch;
 use std::error::Error;
 use std::fmt;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 /// Semantic treatment of one alert button, translated per platform.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -249,6 +252,163 @@ impl DialogRequest {
     /// Splits the request into its description and single-use responder.
     pub fn into_parts(self) -> (DialogDescription, DialogResponder) {
         (self.description, self.responder)
+    }
+}
+
+/// Host-implemented window-modal dialog presenter.
+///
+/// The host injects an implementation through
+/// [`crate::PlatformServices::with_dialog_service`]; the request's
+/// description is already validated when `present` is called.
+pub trait DialogService {
+    /// Presents one validated dialog request window-modally.
+    fn present(&self, request: DialogRequest);
+}
+
+/// Sink recording a dialog request the runtime could not present.
+pub(crate) type DialogErrorReport = Rc<dyn Fn(DialogError)>;
+
+/// Typed dialog presentation reached through [`crate::UpdateContext`].
+///
+/// Every presentation is validated first — an invalid description or a host
+/// without an injected [`DialogService`] is recorded as the typed
+/// [`crate::RenderError::Dialog`] on the mounting runtime, never silently
+/// dropped — and every outcome is delivered as an ordinary component message
+/// through the queued dispatch path, so a synchronously answered dialog can
+/// never re-enter the running update.
+pub struct Dialogs<'a, M> {
+    service: Option<&'a Rc<dyn DialogService>>,
+    dispatch: &'a Dispatch<M>,
+    report: &'a DialogErrorReport,
+}
+
+impl<'a, M: 'static> Dialogs<'a, M> {
+    pub(crate) fn new(
+        service: Option<&'a Rc<dyn DialogService>>,
+        dispatch: &'a Dispatch<M>,
+        report: &'a DialogErrorReport,
+    ) -> Self {
+        Self {
+            service,
+            dispatch,
+            report,
+        }
+    }
+
+    /// Presents one window-modal dialog with an explicit outcome mapping.
+    pub fn present(
+        &self,
+        description: DialogDescription,
+        on_outcome: impl FnOnce(DialogOutcome) -> Option<M> + 'static,
+    ) {
+        if let Some(error) = description.validity_error() {
+            (self.report)(error);
+            return;
+        }
+        let Some(service) = self.service else {
+            (self.report)(DialogError::NoPresenter);
+            return;
+        };
+        let dispatch = self.dispatch.clone();
+        service.present(DialogRequest::new(
+            description,
+            DialogResponder::new(move |outcome| {
+                if let Some(message) = on_outcome(outcome) {
+                    dispatch.emit(message);
+                }
+            }),
+        ));
+    }
+
+    /// Presents one alert whose buttons carry their own messages.
+    pub fn alert(&self, alert: Alert<M>) {
+        let Alert {
+            title,
+            body,
+            buttons,
+            messages,
+            default_button,
+        } = alert;
+        self.present(
+            DialogDescription::Alert(AlertDescription {
+                title,
+                body,
+                buttons,
+                default_button,
+            }),
+            move |outcome| match outcome {
+                DialogOutcome::ButtonChosen(index) => messages.into_iter().nth(index),
+                DialogOutcome::PathsChosen(_)
+                | DialogOutcome::SavePathChosen(_)
+                | DialogOutcome::Cancelled => None,
+            },
+        );
+    }
+
+    /// Presents one file-open panel.
+    pub fn open_panel(
+        &self,
+        description: OpenPanelDescription,
+        on_outcome: impl FnOnce(DialogOutcome) -> Option<M> + 'static,
+    ) {
+        self.present(DialogDescription::OpenPanel(description), on_outcome);
+    }
+
+    /// Presents one file-save panel.
+    pub fn save_panel(
+        &self,
+        description: SavePanelDescription,
+        on_outcome: impl FnOnce(DialogOutcome) -> Option<M> + 'static,
+    ) {
+        self.present(DialogDescription::SavePanel(description), on_outcome);
+    }
+}
+
+impl<M> fmt::Debug for Dialogs<'_, M> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Dialogs")
+            .field("service", &self.service.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Typed alert builder pairing each button with the message it delivers.
+#[derive(Debug)]
+pub struct Alert<M> {
+    title: String,
+    body: String,
+    buttons: Vec<DialogButton>,
+    messages: Vec<M>,
+    default_button: Option<usize>,
+}
+
+impl<M> Alert<M> {
+    /// Creates an alert with a title and supporting body.
+    pub fn new(title: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            body: body.into(),
+            buttons: Vec::new(),
+            messages: Vec::new(),
+            default_button: None,
+        }
+    }
+
+    /// Appends a button delivering `message` when chosen.
+    pub fn button(mut self, label: impl Into<String>, role: DialogButtonRole, message: M) -> Self {
+        self.buttons.push(DialogButton::new(label, role));
+        self.messages.push(message);
+        self
+    }
+
+    /// Declares which button index receives the platform return-key default.
+    ///
+    /// Without this declaration no button receives the return key; core
+    /// validation rejects an index naming a destructive button.
+    pub fn default_button(mut self, index: usize) -> Self {
+        self.default_button = Some(index);
+        self
     }
 }
 

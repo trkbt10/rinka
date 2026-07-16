@@ -30,22 +30,6 @@ fn dialog_probe_panel_directory() -> Option<std::path::PathBuf> {
     std::env::var_os("RINKA_EXPLORER_PANEL_DIR").map(std::path::PathBuf::from)
 }
 
-fn mounted_node_for_key<'a>(
-    node: &'a MountedNode<AppKitHandle>,
-    key: &str,
-) -> Option<&'a MountedNode<AppKitHandle>> {
-    if node
-        .element()
-        .key()
-        .is_some_and(|candidate| candidate.as_str() == key)
-    {
-        return Some(node);
-    }
-    node.children()
-        .iter()
-        .find_map(|child| mounted_node_for_key(child, key))
-}
-
 /// Finds an NSButton titled `title` inside one view hierarchy.
 ///
 /// # Safety
@@ -214,12 +198,12 @@ impl ApplicationDelegate {
     }
 
     fn advance_dialog_probe(&self) {
-        let Some(step) = self
+        let Some((step, attempts)) = self
             .ivars()
             .dialog_probe
             .borrow()
             .as_ref()
-            .map(|probe| probe.step)
+            .map(|probe| (probe.step, probe.attempts))
         else {
             return;
         };
@@ -232,13 +216,18 @@ impl ApplicationDelegate {
             let sheet: *mut AnyObject = msg_send![window.as_object(), attachedSheet];
             NonNull::new(sheet)
         };
+        if std::env::var_os("RINKA_APPKIT_DIALOG_PROBE_TRACE").is_some() {
+            eprintln!(
+                "Rinka dialog probe turn step={step} attempts={attempts} sheet={}",
+                sheet.is_some()
+            );
+        }
         match step {
-            // Establish key status, then open the upload panel.
+            // Open the upload panel. Unlike the accelerator probe, no key
+            // status is needed: every interaction is a direct performClick
+            // or panel action, so the probe never competes for activation
+            // and never steals focus from the user's desktop.
             0 => {
-                if !self.probe_window_is_key() {
-                    self.dialog_probe_retry("activation");
-                    return;
-                }
                 if !self.dialog_probe_click_mounted("upload-files") {
                     self.fail_dialog_probe("click_upload", "element-not-mounted");
                     return;

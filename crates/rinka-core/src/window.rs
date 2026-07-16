@@ -1,8 +1,9 @@
 //! Window, toolbar, and panel descriptions.
 
-use crate::{
-    Component, Dispatch, Element, PlatformServices, ToolbarDisplay, ToolbarItem, UpdateContext,
-};
+use crate::dialog::DialogError;
+use crate::runtime::{UpdateContext, WeakDispatch};
+use crate::services::PlatformServices;
+use crate::{Component, Dispatch, Element, ToolbarDisplay, ToolbarItem};
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::fmt;
@@ -67,34 +68,20 @@ pub enum WindowKind {
 
 /// Render invalidation handle supplied to reactive window content.
 #[derive(Clone)]
-pub struct RenderContext {
-    render: Rc<dyn Fn()>,
-    services: PlatformServices,
-}
+pub struct RenderContext(Rc<dyn Fn()>);
 
 impl RenderContext {
-    pub(crate) fn new(handler: impl Fn() + 'static, services: PlatformServices) -> Self {
-        Self {
-            render: Rc::new(handler),
-            services,
-        }
+    pub(crate) fn new(handler: impl Fn() + 'static) -> Self {
+        Self(Rc::new(handler))
     }
 
     /// Requests reconciliation from the current component state.
     pub fn request_render(&self) {
-        (self.render)();
-    }
-
-    /// Returns the platform services registered by the mounting host.
-    pub fn services(&self) -> &PlatformServices {
-        &self.services
+        (self.0)();
     }
 
     fn inert() -> Self {
-        Self {
-            render: Rc::new(|| {}),
-            services: PlatformServices::default(),
-        }
+        Self(Rc::new(|| {}))
     }
 }
 
@@ -108,7 +95,8 @@ impl fmt::Debug for RenderContext {
 #[derive(Clone)]
 pub struct WindowContent {
     render: Rc<dyn Fn(RenderContext) -> Element>,
-    dialogs: Rc<RefCell<VecDeque<DialogRequest>>>,
+    services: Rc<RefCell<Rc<PlatformServices>>>,
+    dialog_error: Rc<RefCell<Option<DialogError>>>,
 }
 
 impl WindowContent {
@@ -116,30 +104,78 @@ impl WindowContent {
     pub fn reactive(render: impl Fn(RenderContext) -> Element + 'static) -> Self {
         Self {
             render: Rc::new(render),
-            dialogs: Rc::new(RefCell::new(VecDeque::new())),
+            services: Rc::new(RefCell::new(Rc::new(PlatformServices::default()))),
+            dialog_error: Rc::new(RefCell::new(None)),
         }
     }
 
     /// Retains a component and connects its messages to window reconciliation.
     ///
-    /// Delivery follows [`crate::AppRuntime`]'s queued discipline: a message
-    /// emitted while an update is running — including a synchronously
-    /// delivered clipboard read completion — is queued and applied in order
-    /// after the current update returns, so `update` never re-enters itself.
+    /// Message delivery is queue-based: a message emitted while an update
+    /// runs — including a synchronously answered dialog outcome — is applied
+    /// after the current update returns, so the component is never
+    /// re-entered. Each update receives an [`UpdateContext`] carrying the
+    /// services the mounting host injected.
     pub fn component<C>(component: C) -> Self
     where
         C: Component + 'static,
         C::Message: 'static,
     {
-        let driver = Rc::new(ComponentDriver {
-            component: RefCell::new(component),
-            queue: RefCell::new(VecDeque::new()),
-            processing: Cell::new(false),
-        });
-        Self::reactive(move |context| {
-            let dispatch = ComponentDriver::dispatch(&driver, &context);
-            driver.component.borrow().view(dispatch)
-        })
+        let component = Rc::new(RefCell::new(component));
+        let content = Self::reactive(|_| unreachable!("replaced below"));
+        let services = content.services.clone();
+        let dialog_error = content.dialog_error.clone();
+        let messages: Rc<RefCell<VecDeque<C::Message>>> = Rc::new(RefCell::new(VecDeque::new()));
+        let draining = Rc::new(Cell::new(false));
+        let render = move |context: RenderContext| {
+            let target = component.clone();
+            let render_context = context.clone();
+            let services = services.clone();
+            let dialog_error = dialog_error.clone();
+            let messages = messages.clone();
+            let draining = draining.clone();
+            // A dialog outcome re-enters this same dispatch loop later; the
+            // slot holds a weak self-reference so the handler and its own
+            // dispatch never form a retain cycle.
+            let dispatch_slot: Rc<RefCell<Option<WeakDispatch<C::Message>>>> =
+                Rc::new(RefCell::new(None));
+            let handler_slot = dispatch_slot.clone();
+            let dispatch = Dispatch::from_handler(move |message| {
+                messages.borrow_mut().push_back(message);
+                if draining.replace(true) {
+                    return;
+                }
+                loop {
+                    let next = messages.borrow_mut().pop_front();
+                    let Some(next) = next else {
+                        break;
+                    };
+                    let redispatch = handler_slot
+                        .borrow()
+                        .as_ref()
+                        .and_then(WeakDispatch::upgrade)
+                        .expect("the dispatch loop outlives its own invocation");
+                    let error_slot = dialog_error.clone();
+                    let update_context = UpdateContext::for_runtime(
+                        redispatch,
+                        services.borrow().clone(),
+                        Rc::new(move |error| {
+                            *error_slot.borrow_mut() = Some(error);
+                        }),
+                    );
+                    target.borrow_mut().update(next, &update_context);
+                }
+                draining.set(false);
+                render_context.request_render();
+            });
+            *dispatch_slot.borrow_mut() = Some(dispatch.downgrade());
+            component.borrow().view(dispatch)
+        };
+        Self {
+            render: Rc::new(render),
+            services: content.services,
+            dialog_error: content.dialog_error,
+        }
     }
 
     /// Produces a read-only snapshot for extraction and structural review.
@@ -151,60 +187,14 @@ impl WindowContent {
         (self.render)(context)
     }
 
-    /// Drains the dialog requests queued by updates rendered so far.
-    pub(crate) fn take_dialog_requests(&self) -> Vec<DialogRequest> {
-        self.dialogs.borrow_mut().drain(..).collect()
+    /// Installs the platform services injected by the mounting host.
+    pub(crate) fn install_services(&self, services: PlatformServices) {
+        *self.services.borrow_mut() = Rc::new(services);
     }
 
-    pub(crate) fn clear_dialog_requests(&self) {
-        self.dialogs.borrow_mut().clear();
-    }
-}
-
-/// Component state with its queued message delivery for window content.
-struct ComponentDriver<C: Component> {
-    component: RefCell<C>,
-    queue: RefCell<VecDeque<C::Message>>,
-    processing: Cell<bool>,
-}
-
-impl<C: Component + 'static> ComponentDriver<C> {
-    /// Builds a sender that queues into this driver and drains it.
-    fn dispatch(driver: &Rc<Self>, context: &RenderContext) -> Dispatch<C::Message> {
-        let driver = driver.clone();
-        let context = context.clone();
-        Dispatch::from_handler(move |message| {
-            driver.queue.borrow_mut().push_back(message);
-            Self::drain(&driver, &context);
-        })
-    }
-
-    /// Applies queued messages in order, then requests one reconciliation.
-    ///
-    /// The `processing` guard makes a nested emit — from inside `update` or
-    /// from a synchronous service completion — enqueue instead of re-enter.
-    fn drain(driver: &Rc<Self>, context: &RenderContext) {
-        if driver.processing.replace(true) {
-            return;
-        }
-        let mut delivered = false;
-        loop {
-            let message = driver.queue.borrow_mut().pop_front();
-            let Some(message) = message else {
-                break;
-            };
-            let update_context =
-                UpdateContext::new(Self::dispatch(driver, context), context.services().clone());
-            driver
-                .component
-                .borrow_mut()
-                .update(message, &update_context);
-            delivered = true;
-        }
-        driver.processing.set(false);
-        if delivered {
-            context.request_render();
-        }
+    /// Takes the most recent dialog presentation failure.
+    pub(crate) fn take_dialog_error(&self) -> Option<DialogError> {
+        self.dialog_error.borrow_mut().take()
     }
 }
 

@@ -94,7 +94,14 @@ fn build_window(
         list_registry.clone(),
         split_restore_pending,
     ));
-    let runtime = WindowRuntime::mount(renderer, spec.content.clone(), pasteboard_platform_services())
+    // Dialog requests raised by this window's component present as sheets
+    // on this window (window-modal, never app-modal). The registry unions
+    // the pasteboard clipboard service with the per-window dialog presenter.
+    let services =
+        pasteboard_platform_services().with_dialog_service(AppKitWindowDialogService {
+            window: window.clone(),
+        });
+    let runtime = WindowRuntime::mount(renderer, spec.content.clone(), services)
         .map_err(|error| AppKitError(error.to_string()))?;
     runtime.with_renderer(|renderer| {
         if let Some(root) = renderer.mounted() {

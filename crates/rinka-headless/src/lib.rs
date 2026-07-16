@@ -5,9 +5,9 @@ mod clipboard;
 pub use clipboard::FakeClipboard;
 
 use rinka_core::{
-    ContextMenu, DialogDescription, DialogOutcome, DialogRequest, DialogResponder, Element,
-    EventBindings, MonospaceMetrics, NativeBackend, PropertyPatch, Props, TextChange, TextEdit,
-    TextRevision, TextSelection, TextSyncAction,
+    ContextMenu, DialogDescription, DialogOutcome, DialogRequest, DialogResponder, DialogService,
+    Element, EventBindings, MonospaceMetrics, NativeBackend, PropertyPatch, Props, TextChange,
+    TextEdit, TextRevision, TextSelection, TextSyncAction,
 };
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -134,12 +134,14 @@ struct PresentedDialog {
     responder: Option<DialogResponder>,
 }
 
-/// Deterministic window-modal dialog presenter for headless consumer tests.
+/// Deterministic window-modal dialog service for headless consumer tests.
 ///
-/// The presenter records every request it receives, in order, and lets a
+/// The service records every request it receives, in order, and lets a
 /// test script the user's answer by delivering a [`DialogOutcome`] through
 /// the retained single-use responder — the headless stand-in for a native
-/// sheet completing.
+/// sheet completing. Clones share the same recording, so a test keeps one
+/// clone and injects another through
+/// [`rinka_core::PlatformServices::with_dialog_service`].
 #[derive(Clone, Default)]
 pub struct FakeDialogPresenter {
     dialogs: Rc<RefCell<Vec<PresentedDialog>>>,
@@ -149,18 +151,6 @@ impl FakeDialogPresenter {
     /// Creates a presenter with no recorded presentations.
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Returns the presenter closure to install on a runtime.
-    pub fn handler(&self) -> impl Fn(DialogRequest) + 'static {
-        let dialogs = self.dialogs.clone();
-        move |request| {
-            let (description, responder) = request.into_parts();
-            dialogs.borrow_mut().push(PresentedDialog {
-                description,
-                responder: Some(responder),
-            });
-        }
     }
 
     /// Returns how many dialogs have been presented so far.
@@ -194,6 +184,16 @@ impl FakeDialogPresenter {
             }
             None => false,
         }
+    }
+}
+
+impl DialogService for FakeDialogPresenter {
+    fn present(&self, request: DialogRequest) {
+        let (description, responder) = request.into_parts();
+        self.dialogs.borrow_mut().push(PresentedDialog {
+            description,
+            responder: Some(responder),
+        });
     }
 }
 

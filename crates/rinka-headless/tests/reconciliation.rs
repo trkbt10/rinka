@@ -36,7 +36,6 @@ impl Component for WindowSelection {
 
     fn update(&mut self, selected: Self::Message, _context: &UpdateContext<Self::Message>) {
         self.selected = selected;
-        Effects::none()
     }
 
     fn view(&self, dispatch: Dispatch<Self::Message>) -> Element {
@@ -83,7 +82,6 @@ impl Component for WindowRootTransition {
 
     fn update(&mut self, (): Self::Message, _context: &UpdateContext<Self::Message>) {
         self.replaced = true;
-        Effects::none()
     }
 
     fn view(&self, dispatch: Dispatch<Self::Message>) -> Element {
@@ -589,7 +587,6 @@ impl Component for Counter {
         match message {
             Message::Increment => self.count += 1,
         }
-        Effects::none()
     }
 
     fn view(&self, dispatch: Dispatch<Self::Message>) -> Element {
