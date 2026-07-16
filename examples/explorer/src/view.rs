@@ -1,14 +1,14 @@
 //! Deterministic consumer scenes shared by both native hosts.
 
 use rinka::{
-    Align, ApplicationSpec, Axis, ButtonRole, CanvasColor, CanvasPoint, CanvasRect, CanvasSize,
-    CollectionPattern, Component, ControlSize, Dispatch, DrawScene, Element, ImageContent,
-    ImageScaling, Justify, LineWidth, PanelBehavior, PointerEvent, PointerPhase, Size,
-    SortDirection, Spacing, StatusTone, Symbol, TableColumn, TableSort, TextRole, ToolbarAction,
-    ToolbarChoice, ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem, ToolbarMenuEntry,
-    ToolbarPlacement, UiPattern, WindowContent, WindowId, WindowKind, WindowSpec, button, canvas,
-    column, image, label, list, list_row, mount_pattern, progress, row, separator, spacer, status,
-    toggle,
+    Accelerator, Align, ApplicationSpec, Axis, ButtonRole, CanvasColor, CanvasPoint, CanvasRect,
+    CanvasSize, CollectionPattern, Component, ControlSize, Dispatch, DrawScene, Element,
+    ImageContent, ImageScaling, Justify, KeyChord, LineWidth, PanelBehavior, PointerEvent,
+    PointerPhase, Size, SortDirection, Spacing, StatusTone, Symbol, TableColumn, TableSort,
+    TextRole, ToolbarAction, ToolbarChoice, ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem,
+    ToolbarMenuEntry, ToolbarPlacement, UiPattern, WindowContent, WindowId, WindowKind, WindowSpec,
+    button, canvas, column, image, label, list, list_row, mount_pattern, progress, row, separator,
+    spacer, status, toggle,
 };
 
 /// Meaningful UI state used by the consumer verification matrix.
@@ -254,6 +254,7 @@ fn scaling_probe_bitmap() -> ImageContent {
 enum ExplorerMessage {
     SelectLocation(Location),
     SelectFile(FileKey),
+    SetScene(Scene),
     SetShowHidden(bool),
     SetSort(TableSort),
     SetSectionExpanded(&'static str, bool),
@@ -273,6 +274,12 @@ impl Component for ExplorerComponent {
                     .then_some(FileKey::Cargo);
             }
             ExplorerMessage::SelectFile(file) => self.selected_file = Some(file),
+            ExplorerMessage::SetScene(scene) => {
+                self.scene = scene;
+                self.selected_file = (scene == Scene::Ready
+                    && self.location == Location::RemoteProject)
+                    .then_some(FileKey::Cargo);
+            }
             ExplorerMessage::SetShowHidden(value) => {
                 self.show_hidden = value;
                 if !value && self.selected_file == Some(FileKey::HiddenEnvironment) {
@@ -386,13 +393,16 @@ fn main_window(scene: Scene) -> WindowSpec {
                     "Sort and group the file list",
                     ToolbarPlacement::Trailing,
                     [
-                        ToolbarMenuEntry::action(ToolbarAction::new(
-                            "sort-name",
-                            "Name",
-                            Symbol::List,
-                            "Sort by name",
-                            announce("sort-name"),
-                        )),
+                        ToolbarMenuEntry::action(
+                            ToolbarAction::new(
+                                "sort-name",
+                                "Name",
+                                Symbol::List,
+                                "Sort by name",
+                                announce("sort-name"),
+                            )
+                            .chord(shortcut("Primary+Shift+N")),
+                        ),
                         ToolbarMenuEntry::action(ToolbarAction::new(
                             "sort-modified",
                             "Date Modified",
@@ -463,11 +473,60 @@ fn explorer_content(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessag
         },
         [
             sidebar(model, dispatch.clone()),
-            directory_content(model, dispatch),
+            directory_content(model, dispatch.clone()),
             inspector(model),
         ],
     )
     .with_key("explorer-workspace")
+    .accelerators(explorer_accelerators(model, dispatch))
+}
+
+fn shortcut(text: &'static str) -> KeyChord {
+    text.parse().expect("explorer chords are canonical")
+}
+
+/// The explorer's keyboard shortcuts, reconciled with the component state.
+///
+/// The table is declared only where a host delivers it: the AppKit host
+/// dispatches through its application key monitor, while the GTK and WinUI
+/// hosts currently reject a declared table with a typed diagnostic
+/// (`reports/keyboard-shortcuts-and-key-events`).
+fn explorer_accelerators(
+    model: &ExplorerComponent,
+    dispatch: Dispatch<ExplorerMessage>,
+) -> Vec<Accelerator> {
+    if !cfg!(target_os = "macos") {
+        return Vec::new();
+    }
+    let ready = dispatch.clone();
+    let empty = dispatch.clone();
+    let error = dispatch.clone();
+    let hidden = dispatch.clone();
+    let show_hidden = model.show_hidden;
+    vec![
+        // Returning to the primary listing is deliberately global: it works
+        // even while the search field owns typing focus.
+        Accelerator::new("scene-ready", shortcut("Primary+1"), move || {
+            ready.emit(ExplorerMessage::SetScene(Scene::Ready));
+        })
+        .global(true),
+        Accelerator::new("scene-empty", shortcut("Primary+2"), move || {
+            empty.emit(ExplorerMessage::SetScene(Scene::Empty));
+        }),
+        Accelerator::new("scene-error", shortcut("Primary+3"), move || {
+            error.emit(ExplorerMessage::SetScene(Scene::Error));
+        }),
+        Accelerator::new("toggle-hidden", shortcut("Primary+Shift+H"), move || {
+            hidden.emit(ExplorerMessage::SetShowHidden(!show_hidden));
+        }),
+        // Same chord the Arrange menu displays on its Name item.
+        Accelerator::new("sort-name", shortcut("Primary+Shift+N"), move || {
+            dispatch.emit(ExplorerMessage::SetSort(TableSort {
+                column_id: "name".to_owned(),
+                direction: SortDirection::Ascending,
+            }));
+        }),
+    ]
 }
 
 fn sidebar(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) -> Element {

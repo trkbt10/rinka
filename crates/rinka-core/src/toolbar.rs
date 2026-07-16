@@ -1,5 +1,6 @@
 //! Declarative native toolbar contracts.
 
+use crate::chord::KeyChord;
 use crate::{ActivateHandler, InputHandler, Symbol};
 use std::fmt;
 use std::rc::Rc;
@@ -54,6 +55,10 @@ pub struct ToolbarAction {
     pub help: String,
     /// Whether the action is currently enabled.
     pub enabled: bool,
+    /// Key chord shown as the native key equivalent when the action is
+    /// hosted inside a menu. Display data only: app-wide delivery of the
+    /// chord is declared through the window's accelerator table.
+    pub chord: Option<KeyChord>,
     /// Activation handler connected once by the native host.
     pub on_activate: ActivateHandler,
 }
@@ -73,6 +78,7 @@ impl ToolbarAction {
             symbol,
             help: help.into(),
             enabled: true,
+            chord: None,
             on_activate: Rc::new(handler),
         }
     }
@@ -80,6 +86,12 @@ impl ToolbarAction {
     /// Changes availability while preserving the action.
     pub fn enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
+        self
+    }
+
+    /// Declares the key chord a hosting menu displays for this action.
+    pub fn chord(mut self, chord: KeyChord) -> Self {
+        self.chord = Some(chord);
         self
     }
 }
@@ -93,6 +105,7 @@ impl fmt::Debug for ToolbarAction {
             .field("symbol", &self.symbol)
             .field("help", &self.help)
             .field("enabled", &self.enabled)
+            .field("chord", &self.chord.map(|chord| chord.to_string()))
             .finish_non_exhaustive()
     }
 }

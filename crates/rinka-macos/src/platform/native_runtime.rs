@@ -583,6 +583,11 @@ fn create_toolbar_menu(
                         keyEquivalent: key.as_object()
                     ];
                     let menu_item = Id::from_owned(menu_item);
+                    if let Some(chord) = action.chord {
+                        // The menu displays the chord; app-wide delivery is
+                        // owned by the window's accelerator table.
+                        apply_menu_item_chord(menu_item.as_object(), chord);
+                    }
                     let _: () = msg_send![menu_item.as_object(), setTarget: &*target];
                     let _: () = msg_send![menu_item.as_object(), setEnabled: spec.enabled && action.enabled];
                     set_string(menu_item.as_object(), "setToolTip:", &action.help);

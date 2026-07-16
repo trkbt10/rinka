@@ -5,14 +5,16 @@ use objc2::runtime::{AnyObject, NSObjectProtocol};
 use objc2::{DefinedClass, MainThreadOnly, define_class, msg_send, sel};
 use objc2_foundation::{MainThreadMarker, NSObject};
 use rinka_core::{
-    Align, ApplicationSpec, Axis, ButtonMaterial, ButtonRole, CanvasColor, CanvasPoint, CanvasRect,
-    CanvasSize, CanvasVector, CollectionPattern, ControlSize, DrawCommand, DrawScene, Element,
-    ElementKind, EventBindings, ImageContent, ImageScaling, InputKind, Justify, LineWidth,
-    ListRowRole, MonospaceMetrics, MountedNode, NativeBackend, PanelBehavior, PatternRegion,
-    PointerButton, PointerEvent, PointerModifiers, PointerPhase, PropertyPatch, Props, Renderer,
-    SortDirection, Spacing, StatusTone, Symbol, TableColumn, TableSort, TextRole, ToolbarAction,
-    ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem, ToolbarItemKind, ToolbarMenuEntry,
-    ToolbarPlacement, UiPattern, WindowKind, WindowRuntime, WindowSpec,
+    AcceleratorOutcome, AcceleratorRouter, Align, ApplicationSpec, Axis, ButtonMaterial,
+    ButtonRole, CanvasColor, CanvasPoint, CanvasRect, CanvasSize, CanvasVector, CollectionPattern,
+    ControlSize, DrawCommand, DrawScene, Element, ElementKind, EventBindings, ImageContent,
+    ImageScaling, InputKind, Justify, KeyChord, KeyIdentity, KeyRoutingContext, LineWidth,
+    ListRowRole, Modifiers, MonospaceMetrics, MountedNode, NativeBackend, PanelBehavior,
+    PatternRegion, PointerButton, PointerEvent, PointerModifiers, PointerPhase, PrimaryModifier,
+    PropertyPatch, Props, Renderer, SortDirection, Spacing, StatusTone, Symbol, TableColumn,
+    TableSort, TextRole, ToolbarAction, ToolbarDisplay, ToolbarGroupDisplay, ToolbarItem,
+    ToolbarItemKind, ToolbarMenuEntry, ToolbarPlacement, UiPattern, WindowId, WindowKind,
+    WindowRuntime, WindowSpec,
 };
 use std::cell::{Cell, RefCell};
 use std::error::Error;
@@ -28,6 +30,7 @@ pub use application::run;
 
 include!("platform/native_runtime.rs");
 include!("platform/canvas_surface.rs");
+include!("platform/key_dispatch.rs");
 include!("platform/collection_delegate.rs");
 include!("platform/backend.rs");
 include!("platform/collection_mount.rs");

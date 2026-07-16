@@ -12,6 +12,9 @@ repository.workspace = true
 rinka-core = { path = "../rinka-core" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# block2 is already in the dependency graph through objc2-foundation; the
+# direct dependency provides the handler block for the NSEvent local monitor.
+block2 = "0.6.2"
 objc2 = { version = "0.6.4", features = ["exception"] }
 objc2-foundation = "0.3.2"
 

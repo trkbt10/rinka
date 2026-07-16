@@ -24,8 +24,12 @@ impl ApplicationDelegate {
             split_resize_epoch: Cell::new(0),
             split_restore_pending: Rc::new(Cell::new(false)),
             toolbar_delegates: RefCell::new(Vec::new()),
+            accelerator_router: Rc::new(RefCell::new(AcceleratorRouter::new())),
+            window_identities: Rc::new(RefCell::new(Vec::new())),
+            key_monitor: RefCell::new(None),
             transition_probe: RefCell::new(None),
             scene_probe: RefCell::new(None),
+            accelerator_probe: RefCell::new(None),
         });
         // SAFETY: NSObject's init signature and ownership convention are stable.
         unsafe { msg_send![super(object), init] }
@@ -117,6 +121,20 @@ impl ApplicationDelegate {
                     if is_primary && key_window.is_none() {
                         key_window = Some(native_window.clone());
                     }
+                    // The renderer owns one stable accelerator table for the
+                    // window's lifetime; registering it here connects the
+                    // application key monitor exactly once per window while
+                    // reconciliation keeps replacing the entries in place.
+                    let accelerator_bindings = renderer
+                        .with_renderer(|renderer| renderer.accelerator_bindings().clone());
+                    self.ivars()
+                        .accelerator_router
+                        .borrow_mut()
+                        .register_window(window.id.clone(), accelerator_bindings);
+                    self.ivars()
+                        .window_identities
+                        .borrow_mut()
+                        .push((native_window.as_ptr() as usize, window.id.clone()));
                     self.ivars()
                         .list_registries
                         .borrow_mut()
@@ -159,6 +177,14 @@ impl ApplicationDelegate {
                 object: std::ptr::null::<AnyObject>()
             ];
         }
+        // One application-local key monitor delivers every declared
+        // accelerator; the router and the per-window tables it consults are
+        // updated in place, so this connection is never remade.
+        let monitor = install_accelerator_monitor(
+            self.ivars().accelerator_router.clone(),
+            self.ivars().window_identities.clone(),
+        );
+        *self.ivars().key_monitor.borrow_mut() = Some(monitor);
         // SAFETY: Required for a Cargo-launched, unbundled AppKit process.
         unsafe {
             let _: () = msg_send![app, activate];
@@ -640,6 +666,387 @@ impl ApplicationDelegate {
         );
         if delivered {
             self.capture_windows_to_directory("after-pointer-");
+        }
+    }
+
+    fn begin_accelerator_probe(&self) {
+        if std::env::var_os("RINKA_APPKIT_ACCELERATOR_PROBE").is_none()
+            || self.ivars().accelerator_probe.borrow().is_some()
+        {
+            return;
+        }
+        if std::env::var_os("RINKA_APPKIT_SCENE_PROBE").is_some()
+            || std::env::var_os("RINKA_APPKIT_TRANSITION_PROBE").is_some()
+        {
+            panic!("the accelerator probe must run in its own process");
+        }
+        *self.ivars().accelerator_probe.borrow_mut() = Some(AcceleratorProbe {
+            step: 0,
+            attempts: 0,
+            passed: true,
+        });
+        self.schedule_accelerator_probe();
+    }
+
+    fn observed_probe_scene(&self) -> Option<&'static str> {
+        let renderers = self.ivars().renderers.borrow();
+        renderers.first().and_then(|runtime| {
+            runtime.with_renderer(|renderer| renderer.mounted().and_then(mounted_scene))
+        })
+    }
+
+    /// Returns whether the primary window is key, re-requesting activation
+    /// otherwise. Cargo-launched diagnostics can lose activation to other
+    /// processes starting concurrently; window-scoped chords require key
+    /// status, so the probe never posts before it is established.
+    fn probe_window_is_key(&self) -> bool {
+        let Some(window) = self.ivars().windows.borrow().first().cloned() else {
+            return false;
+        };
+        // SAFETY: Reading key status and re-requesting activation for the
+        // retained primary window are main-thread NSApplication calls.
+        unsafe {
+            let application: *mut AnyObject =
+                msg_send![objc2::class!(NSApplication), sharedApplication];
+            let active: bool = msg_send![application, isActive];
+            let key: *mut AnyObject = msg_send![application, keyWindow];
+            if active && key == window.as_ptr() {
+                return true;
+            }
+            let _: () = msg_send![application, activate];
+            let _: () = msg_send![window.as_object(),
+                makeKeyAndOrderFront: std::ptr::null::<AnyObject>()
+            ];
+        }
+        false
+    }
+
+    fn fail_accelerator_probe_step(&self, step: &'static str, detail: &str) {
+        eprintln!("Rinka accelerator probe step={step} {detail} pass=false");
+        if let Some(probe) = self.ivars().accelerator_probe.borrow_mut().as_mut() {
+            probe.passed = false;
+        }
+        self.finish_accelerator_probe();
+    }
+
+    /// Waits until the mounted scene matches, retrying across main-loop
+    /// turns; `Some(true)` reports the settled match, `Some(false)` the
+    /// timeout, and `None` requests another turn.
+    fn await_probe_scene(&self, step: &'static str, expected: &'static str) -> Option<bool> {
+        const MAX_MAIN_LOOP_TURNS: usize = 200;
+        let observed = self.observed_probe_scene();
+        if observed == Some(expected) {
+            eprintln!(
+                "Rinka accelerator probe step={step} expected_scene={expected} observed_scene={expected} pass=true"
+            );
+            if let Some(probe) = self.ivars().accelerator_probe.borrow_mut().as_mut() {
+                probe.attempts = 0;
+            }
+            return Some(true);
+        }
+        let attempts = {
+            let mut probe = self.ivars().accelerator_probe.borrow_mut();
+            let probe = probe.as_mut()?;
+            probe.attempts += 1;
+            probe.attempts
+        };
+        if attempts < MAX_MAIN_LOOP_TURNS {
+            return None;
+        }
+        eprintln!(
+            "Rinka accelerator probe step={step} expected_scene={expected} observed_scene={} pass=false",
+            observed.unwrap_or("unknown")
+        );
+        if let Some(probe) = self.ivars().accelerator_probe.borrow_mut().as_mut() {
+            probe.passed = false;
+        }
+        Some(false)
+    }
+
+    /// Posts one synthetic key-down through the real event queue so the
+    /// local monitor observes it exactly like hardware input.
+    fn post_probe_chord(&self, characters: &str, key_code: u16, flags: usize) {
+        let Some(window) = self.ivars().windows.borrow().first().cloned() else {
+            return;
+        };
+        let text = ns_string(characters);
+        // SAFETY: The retained NSWindow supplies a live window number and the
+        // synthesized NSEvent is queued on the main thread; AppKit dequeues
+        // it through the normal run-loop dispatch that local monitors hook.
+        unsafe {
+            let window_number: isize = msg_send![window.as_object(), windowNumber];
+            let event: *mut AnyObject = msg_send![objc2::class!(NSEvent),
+                keyEventWithType: 10_usize,
+                location: Point::default(),
+                modifierFlags: flags,
+                timestamp: 0.0_f64,
+                windowNumber: window_number,
+                context: std::ptr::null::<AnyObject>(),
+                characters: text.as_object(),
+                charactersIgnoringModifiers: text.as_object(),
+                isARepeat: false,
+                keyCode: key_code
+            ];
+            let application: *mut AnyObject =
+                msg_send![objc2::class!(NSApplication), sharedApplication];
+            let _: () = msg_send![application, postEvent: event, atStart: false];
+        }
+    }
+
+    fn focus_probe_search_field(&self) -> bool {
+        let Some(window) = self.ivars().windows.borrow().first().cloned() else {
+            return false;
+        };
+        // SAFETY: The retained NSWindow owns its toolbar; the search field is
+        // retained by its NSSearchToolbarItem while focus moves to it.
+        unsafe {
+            let toolbar: *mut AnyObject = msg_send![window.as_object(), toolbar];
+            let Some(toolbar) = NonNull::new(toolbar) else {
+                return false;
+            };
+            let items: *mut AnyObject = msg_send![toolbar.as_ref(), items];
+            let count: usize = msg_send![items, count];
+            for index in 0..count {
+                let item: *mut AnyObject = msg_send![items, objectAtIndex: index];
+                let is_search: bool =
+                    msg_send![item, isKindOfClass: objc2::class!(NSSearchToolbarItem)];
+                if !is_search {
+                    continue;
+                }
+                let field: *mut AnyObject = msg_send![item, searchField];
+                let accepted: bool = msg_send![window.as_object(), makeFirstResponder: field];
+                return accepted && first_responder_is_text_input(window.as_object());
+            }
+        }
+        false
+    }
+
+    fn unfocus_probe_text_input(&self) {
+        let Some(window) = self.ivars().windows.borrow().first().cloned() else {
+            return;
+        };
+        // SAFETY: Resigning first responder on the retained key window ends
+        // the field editor session begun by the probe.
+        unsafe {
+            let _: bool =
+                msg_send![window.as_object(), makeFirstResponder: std::ptr::null::<AnyObject>()];
+        }
+    }
+
+    /// Reads the key equivalent of the toolbar menu action titled `Name`.
+    fn probe_menu_key_equivalent(&self) -> Option<(String, usize)> {
+        let window = self.ivars().windows.borrow().first().cloned()?;
+        // SAFETY: The toolbar, its NSMenuToolbarItem, the menu, and its items
+        // are all retained by the window; only public properties are read.
+        unsafe {
+            let toolbar: *mut AnyObject = msg_send![window.as_object(), toolbar];
+            let toolbar = NonNull::new(toolbar)?;
+            let items: *mut AnyObject = msg_send![toolbar.as_ref(), items];
+            let count: usize = msg_send![items, count];
+            for index in 0..count {
+                let item: *mut AnyObject = msg_send![items, objectAtIndex: index];
+                let is_menu: bool =
+                    msg_send![item, isKindOfClass: objc2::class!(NSMenuToolbarItem)];
+                if !is_menu {
+                    continue;
+                }
+                let menu: *mut AnyObject = msg_send![item, menu];
+                let Some(menu) = NonNull::new(menu) else {
+                    continue;
+                };
+                let entries: *mut AnyObject = msg_send![menu.as_ref(), itemArray];
+                let entry_count: usize = msg_send![entries, count];
+                for entry_index in 0..entry_count {
+                    let entry: *mut AnyObject = msg_send![entries, objectAtIndex: entry_index];
+                    let title: *mut AnyObject = msg_send![entry, title];
+                    if rust_string(title) != "Name" {
+                        continue;
+                    }
+                    let key_equivalent: *mut AnyObject = msg_send![entry, keyEquivalent];
+                    let mask: usize = msg_send![entry, keyEquivalentModifierMask];
+                    return Some((rust_string(key_equivalent), mask));
+                }
+            }
+        }
+        None
+    }
+
+    fn advance_accelerator_probe(&self) {
+        const MAX_ACTIVATION_TURNS: usize = 200;
+        // Turns the withheld chord is given to prove it changes nothing.
+        const WITHHELD_QUIET_TURNS: usize = 4;
+        let Some((step, attempts)) = self
+            .ivars()
+            .accelerator_probe
+            .borrow()
+            .as_ref()
+            .map(|probe| (probe.step, probe.attempts))
+        else {
+            return;
+        };
+        let advance = |next_attempts: usize| {
+            if let Some(probe) = self.ivars().accelerator_probe.borrow_mut().as_mut() {
+                probe.step += 1;
+                probe.attempts = next_attempts;
+            }
+            self.schedule_accelerator_probe();
+        };
+        match step {
+            0 => {
+                // Establish key status before the first window-scoped chord.
+                if !self.probe_window_is_key() {
+                    if attempts >= MAX_ACTIVATION_TURNS {
+                        self.fail_accelerator_probe_step("initial_scene", "activation_timeout");
+                        return;
+                    }
+                    if let Some(probe) = self.ivars().accelerator_probe.borrow_mut().as_mut() {
+                        probe.attempts += 1;
+                    }
+                    self.schedule_accelerator_probe();
+                    return;
+                }
+                let observed = self.observed_probe_scene();
+                if observed != Some("ready") {
+                    self.fail_accelerator_probe_step("initial_scene", "expected_scene=ready");
+                    return;
+                }
+                eprintln!(
+                    "Rinka accelerator probe step=initial_scene expected_scene=ready observed_scene=ready pass=true"
+                );
+                // Primary+2 switches the explorer to the empty scene.
+                self.post_probe_chord("2", 19, NS_EVENT_MODIFIER_COMMAND);
+                advance(0);
+            }
+            1 => match self.await_probe_scene("chord_dispatch", "empty") {
+                None => self.schedule_accelerator_probe(),
+                Some(false) => self.finish_accelerator_probe(),
+                Some(true) => {
+                    let focused = self.focus_probe_search_field();
+                    eprintln!("Rinka accelerator probe step=focus_search_field pass={focused}");
+                    if !focused {
+                        if let Some(probe) = self.ivars().accelerator_probe.borrow_mut().as_mut()
+                        {
+                            probe.passed = false;
+                        }
+                        self.finish_accelerator_probe();
+                        return;
+                    }
+                    // Primary+1 is declared global and must fire over the
+                    // focused field; the monitor swallows it, so the field
+                    // keeps its editing session. The routed outcome is
+                    // asserted from the "Rinka accelerator event" log line.
+                    self.post_probe_chord("1", 18, NS_EVENT_MODIFIER_COMMAND);
+                    advance(0);
+                }
+            },
+            2 => match self.await_probe_scene("global_over_text_input", "ready") {
+                None => self.schedule_accelerator_probe(),
+                Some(false) => self.finish_accelerator_probe(),
+                Some(true) => {
+                    // Re-assert the editing session before the withheld test;
+                    // the reconciliation triggered by Primary+1 must not have
+                    // moved focus, but the field is re-focused defensively.
+                    let focused = self.focus_probe_search_field();
+                    eprintln!("Rinka accelerator probe step=refocus_search_field pass={focused}");
+                    if !focused {
+                        if let Some(probe) = self.ivars().accelerator_probe.borrow_mut().as_mut()
+                        {
+                            probe.passed = false;
+                        }
+                        self.finish_accelerator_probe();
+                        return;
+                    }
+                    // Primary+3 must be withheld while the search field is
+                    // key; the event falls through to the field editor, and
+                    // whatever AppKit does with the unhandled chord natively
+                    // is the field's own business.
+                    self.post_probe_chord("3", 20, NS_EVENT_MODIFIER_COMMAND);
+                    advance(0);
+                }
+            },
+            3 => {
+                // The withheld chord leaves no scene trace; give its event
+                // several turns to dispatch, then require the scene
+                // unchanged. Whether the field owned focus at dispatch time
+                // is asserted from the monitor's event log line.
+                if attempts < WITHHELD_QUIET_TURNS {
+                    if let Some(probe) = self.ivars().accelerator_probe.borrow_mut().as_mut() {
+                        probe.attempts += 1;
+                    }
+                    self.schedule_accelerator_probe();
+                    return;
+                }
+                let observed = self.observed_probe_scene();
+                let passed = observed == Some("ready");
+                eprintln!(
+                    "Rinka accelerator probe step=text_field_precedence expected_scene=ready observed_scene={} pass={passed}",
+                    observed.unwrap_or("unknown")
+                );
+                if !passed {
+                    if let Some(probe) = self.ivars().accelerator_probe.borrow_mut().as_mut() {
+                        probe.passed = false;
+                    }
+                    self.finish_accelerator_probe();
+                    return;
+                }
+                self.unfocus_probe_text_input();
+                // With focus released the withheld chord fires again.
+                self.post_probe_chord("3", 20, NS_EVENT_MODIFIER_COMMAND);
+                advance(0);
+            }
+            _ => match self.await_probe_scene("chord_after_unfocus", "error") {
+                None => self.schedule_accelerator_probe(),
+                Some(false) => self.finish_accelerator_probe(),
+                Some(true) => {
+                    let menu = self.probe_menu_key_equivalent();
+                    let expected_mask = NS_EVENT_MODIFIER_COMMAND | NS_EVENT_MODIFIER_SHIFT;
+                    let menu_passed = menu
+                        .as_ref()
+                        .is_some_and(|(text, mask)| text == "n" && *mask == expected_mask);
+                    eprintln!(
+                        "Rinka accelerator probe step=menu_key_equivalent observed={menu:?} expected=(\"n\", {expected_mask}) pass={menu_passed}"
+                    );
+                    if !menu_passed
+                        && let Some(probe) = self.ivars().accelerator_probe.borrow_mut().as_mut()
+                    {
+                        probe.passed = false;
+                    }
+                    self.finish_accelerator_probe();
+                }
+            },
+        }
+    }
+
+    fn schedule_accelerator_probe(&self) {
+        // SAFETY: The next main-loop turn runs after the queued key event has
+        // been dispatched and any resulting reconciliation has completed.
+        unsafe {
+            let _: () = msg_send![self,
+                performSelector: sel!(runAcceleratorProbe:),
+                withObject: std::ptr::null::<AnyObject>(),
+                afterDelay: 0.05_f64
+            ];
+        }
+    }
+
+    fn finish_accelerator_probe(&self) {
+        let passed = self
+            .ivars()
+            .accelerator_probe
+            .borrow()
+            .as_ref()
+            .is_some_and(|probe| probe.passed);
+        eprintln!(
+            "Rinka accelerator probe result={}",
+            if passed { "PASS" } else { "FAIL" }
+        );
+        if std::env::var_os("RINKA_APPKIT_ACCELERATOR_PROBE_HOLD").is_none() {
+            // SAFETY: Diagnostic completion terminates only the current test app.
+            unsafe {
+                let application: *mut AnyObject =
+                    msg_send![objc2::class!(NSApplication), sharedApplication];
+                let _: () = msg_send![application, terminate: std::ptr::null::<AnyObject>()];
+            }
         }
     }
 

@@ -10,8 +10,19 @@ struct ApplicationDelegateIvars {
     split_resize_epoch: Cell<u64>,
     split_restore_pending: Rc<Cell<bool>>,
     toolbar_delegates: RefCell<Vec<Retained<ToolbarDelegate>>>,
+    accelerator_router: Rc<RefCell<AcceleratorRouter>>,
+    window_identities: WindowIdentityRegistry,
+    key_monitor: RefCell<Option<Id>>,
     transition_probe: RefCell<Option<TransitionProbe>>,
     scene_probe: RefCell<Option<SceneProbe>>,
+    accelerator_probe: RefCell<Option<AcceleratorProbe>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AcceleratorProbe {
+    step: usize,
+    attempts: usize,
+    passed: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -312,6 +323,7 @@ define_class!(
             }
             self.begin_transition_probe();
             self.begin_scene_probe();
+            self.begin_accelerator_probe();
         }
 
         #[unsafe(method(runTransitionProbe:))]
@@ -322,6 +334,11 @@ define_class!(
         #[unsafe(method(runSceneProbe:))]
         fn run_scene_probe(&self, _sender: *mut AnyObject) {
             self.advance_scene_probe();
+        }
+
+        #[unsafe(method(runAcceleratorProbe:))]
+        fn run_accelerator_probe(&self, _sender: *mut AnyObject) {
+            self.advance_accelerator_probe();
         }
 
         #[unsafe(method(windowDidResize:))]

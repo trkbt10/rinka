@@ -83,6 +83,26 @@ fn write_element(output: &mut String, element: &Element) {
     )
     .unwrap();
     write_props(output, element.props());
+    if !element.accelerator_table().is_empty() {
+        output.push_str(",\"accelerators\":[");
+        for (index, entry) in element.accelerator_table().iter().enumerate() {
+            if index > 0 {
+                output.push(',');
+            }
+            let description = entry.description();
+            write!(
+                output,
+                "{{\"id\":{},\"chord\":{},\"scope\":{},\"enabled\":{},\"global\":{}}}",
+                json(&description.id),
+                json(&description.chord.to_string()),
+                json(&format!("{:?}", description.scope)),
+                description.enabled,
+                description.global
+            )
+            .unwrap();
+        }
+        output.push(']');
+    }
     output.push_str(",\"children\":[");
     for (index, child) in element.children().iter().enumerate() {
         if index > 0 {
