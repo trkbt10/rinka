@@ -8,9 +8,9 @@ pub use text_input::SyntheticTextInput;
 
 use rinka_core::{
     ContextMenu, DialogDescription, DialogOutcome, DialogRequest, DialogResponder, DialogService,
-    DragPayload, DropPosition, DropTarget, Element, EventBindings, FileDrop, FilePromise,
-    MonospaceMetrics, NativeBackend, PayloadDrop, PropertyPatch, Props, TextChange, TextEdit,
-    TextRevision, TextSelection, TextSyncAction,
+    DockEvent, DockLayout, DockTabMenus, DragPayload, DropPosition, DropTarget, Element,
+    EventBindings, FileDrop, FilePromise, MonospaceMetrics, NativeBackend, PayloadDrop,
+    PropertyPatch, Props, TextChange, TextEdit, TextRevision, TextSelection, TextSyncAction,
 };
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -131,6 +131,7 @@ struct Node {
     file_promise: Option<FilePromise>,
     drag_payload: Option<DragPayload>,
     drop_target: Option<DropTarget>,
+    dock_tab_menus: Option<DockTabMenus>,
     events: EventBindings,
     children: Vec<Handle>,
     text_area: Option<TextAreaModel>,
@@ -254,6 +255,7 @@ impl HeadlessBackend {
                 file_promise: None,
                 drag_payload: None,
                 drop_target: None,
+                dock_tab_menus: None,
                 events: EventBindings::default(),
                 children: Vec::new(),
                 text_area: None,
@@ -320,6 +322,55 @@ impl HeadlessBackend {
         self.nodes
             .get(&handle)
             .and_then(|node| node.drop_target.as_ref())
+    }
+
+    /// Returns the current dock layout realized on a mounted dock.
+    pub fn dock_layout_of(&self, handle: Handle) -> Option<&DockLayout> {
+        self.nodes.get(&handle).and_then(|node| match &node.props {
+            Props::Dock { layout, .. } => Some(layout),
+            _ => None,
+        })
+    }
+
+    /// Returns the current per-tab dock menu models.
+    pub fn dock_tab_menus_of(&self, handle: Handle) -> Option<&DockTabMenus> {
+        self.nodes
+            .get(&handle)
+            .and_then(|node| node.dock_tab_menus.as_ref())
+    }
+
+    /// Simulates one native dock gesture: the semantic request is emitted
+    /// through the dock's stable event binding, exactly as a platform tab
+    /// strip or drop zone would report it.
+    pub fn simulate_dock_event(&self, dock: Handle, event: DockEvent) -> Result<(), HeadlessError> {
+        let node = self
+            .nodes
+            .get(&dock)
+            .ok_or_else(|| HeadlessError(format!("unknown dock {}", dock.0)))?;
+        if node.events.emit_dock(event) {
+            Ok(())
+        } else {
+            Err(HeadlessError(format!(
+                "dock {} declares no dock handler",
+                dock.0
+            )))
+        }
+    }
+
+    /// Simulates activating one item of a dock tab's context menu through
+    /// the dock's stable event binding; returns whether a handler ran, with
+    /// the same refusals the native menu enforces.
+    pub fn simulate_dock_tab_menu_activation(
+        &self,
+        dock: Handle,
+        tab_id: &str,
+        item_id: &str,
+    ) -> Result<bool, HeadlessError> {
+        let node = self
+            .nodes
+            .get(&dock)
+            .ok_or_else(|| HeadlessError(format!("unknown dock {}", dock.0)))?;
+        Ok(node.events.emit_dock_tab_menu_activation(tab_id, item_id))
     }
 
     /// Simulates the operating system dropping files at a point inside the
@@ -551,6 +602,7 @@ impl NativeBackend for HeadlessBackend {
                 file_promise: element.file_promise_model().cloned(),
                 drag_payload: element.drag_payload_model().cloned(),
                 drop_target: element.drop_target_model().cloned(),
+                dock_tab_menus: element.dock_tab_menus_model().cloned(),
                 events,
                 children: Vec::new(),
                 text_area,
@@ -616,6 +668,7 @@ impl NativeBackend for HeadlessBackend {
         node.file_promise = patch.file_promise().cloned();
         node.drag_payload = patch.drag_payload().cloned();
         node.drop_target = patch.drop_target().cloned();
+        node.dock_tab_menus = patch.dock_tab_menus().cloned();
         self.operations.push(Operation::Patch {
             handle: *handle,
             patch: patch.clone(),
