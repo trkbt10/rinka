@@ -1,7 +1,7 @@
 //! Deterministic source-to-JSON extraction for blind structural review.
 
 use crate::view::{self, Scene};
-use rinka::{ApplicationSpec, Element, Props, WindowKind};
+use rinka::{ApplicationSpec, Element, MenuEntry, Props, WindowKind};
 use std::fmt::Write;
 
 /// Extracts all required states without interpreting or rewriting labels.
@@ -103,6 +103,11 @@ fn write_element(output: &mut String, element: &Element) {
         }
         output.push(']');
     }
+    output.push_str(",\"contextMenu\":");
+    match element.context_menu_model() {
+        Some(menu) => write_menu_entries(output, &menu.entries),
+        None => output.push_str("null"),
+    }
     output.push_str(",\"children\":[");
     for (index, child) in element.children().iter().enumerate() {
         if index > 0 {
@@ -111,6 +116,44 @@ fn write_element(output: &mut String, element: &Element) {
         write_element(output, child);
     }
     output.push_str("]}");
+}
+
+fn write_menu_entries(output: &mut String, entries: &[MenuEntry]) {
+    output.push('[');
+    for (index, entry) in entries.iter().enumerate() {
+        if index > 0 {
+            output.push(',');
+        }
+        match entry {
+            MenuEntry::Separator => output.push_str("{\"entry\":\"separator\"}"),
+            MenuEntry::Item(item) => write!(
+                output,
+                "{{\"entry\":\"item\",\"id\":{},\"label\":{},\"help\":{},\"enabled\":{},\"checked\":{},\"role\":{},\"symbol\":{}}}",
+                json(&item.id),
+                json(&item.label),
+                json(&item.help),
+                item.enabled,
+                item.checked,
+                json(&format!("{:?}", item.role)),
+                item.symbol
+                    .map_or_else(|| "null".to_owned(), |value| json(&format!("{value:?}"))),
+            )
+            .unwrap(),
+            MenuEntry::Submenu(submenu) => {
+                write!(
+                    output,
+                    "{{\"entry\":\"submenu\",\"id\":{},\"label\":{},\"enabled\":{},\"entries\":",
+                    json(&submenu.id),
+                    json(&submenu.label),
+                    submenu.enabled,
+                )
+                .unwrap();
+                write_menu_entries(output, &submenu.entries);
+                output.push('}');
+            }
+        }
+    }
+    output.push(']');
 }
 
 fn write_props(output: &mut String, props: &Props) {
@@ -290,5 +333,14 @@ mod tests {
         assert!(output.contains("accessibilityLabel"));
         assert!(output.contains("Connection Activity"));
         assert!(output.contains("Canvas test pattern"));
+    }
+
+    #[test]
+    fn extraction_records_the_file_row_context_menu() {
+        let output = extract_all_scenes();
+        assert!(output.contains("\"entry\":\"item\",\"id\":\"rename\""));
+        assert!(output.contains("\"entry\":\"submenu\",\"id\":\"open-with\""));
+        assert!(output.contains("\"role\":\"Destructive\""));
+        assert!(output.contains("\"entry\":\"separator\""));
     }
 }

@@ -4,11 +4,11 @@ use rinka::{
     Accelerator, Align, ApplicationSpec, Axis, ButtonRole, CanvasColor, CanvasPoint, CanvasRect,
     CanvasSize, CollectionPattern, Component, ControlSize, Dispatch, DrawScene, Element,
     ImageContent, ImageScaling, Justify, KeyChord, LineWidth, MenuEntry, MenuItem, PanelBehavior,
-    PointerEvent, PointerPhase, Size, SortDirection, Spacing, StatusTone, Symbol, TableColumn,
-    TableSort, TextRole, ToolbarAction, ToolbarChoice, ToolbarDisplay, ToolbarGroupDisplay,
-    ToolbarItem, ToolbarPlacement, UiPattern, WindowContent, WindowId, WindowKind, WindowSpec,
-    button, canvas, column, image, label, list, list_row, mount_pattern, progress, row, separator,
-    spacer, status, toggle,
+    PointerEvent, PointerPhase, Size, SortDirection, Spacing, StatusTone, Submenu, Symbol,
+    TableColumn, TableSort, TextRole, ToolbarAction, ToolbarChoice, ToolbarDisplay,
+    ToolbarGroupDisplay, ToolbarItem, ToolbarPlacement, UiPattern, WindowContent, WindowId,
+    WindowKind, WindowSpec, button, canvas, column, image, label, list, list_row, mount_pattern,
+    progress, row, separator, spacer, status, toggle,
 };
 
 /// Meaningful UI state used by the consumer verification matrix.
@@ -131,6 +131,10 @@ struct ExplorerComponent {
     canvas_pointer: Option<PointerEvent>,
     preview_bitmaps: Vec<(FileKey, ImageContent)>,
     scaling_probe: ImageContent,
+    deleted: Vec<FileKey>,
+    duplicated: Vec<FileKey>,
+    favorite_files: Vec<FileKey>,
+    last_file_action: Option<String>,
 }
 
 impl ExplorerComponent {
@@ -166,6 +170,10 @@ impl ExplorerComponent {
                 (FileKey::AppIcon, preview_bitmap(FileKey::AppIcon)),
             ],
             scaling_probe: scaling_probe_bitmap(),
+            deleted: Vec::new(),
+            duplicated: Vec::new(),
+            favorite_files: Vec::new(),
+            last_file_action: None,
         }
     }
 
@@ -260,6 +268,11 @@ enum ExplorerMessage {
     SetSectionExpanded(&'static str, bool),
     SetFileExpanded(FileKey, bool),
     CanvasPointer(PointerEvent),
+    RenameFile(FileKey),
+    DuplicateFile(FileKey),
+    DeleteFile(FileKey),
+    ToggleFavoriteFile(FileKey),
+    OpenFileWith(FileKey, &'static str),
 }
 
 impl Component for ExplorerComponent {
@@ -298,6 +311,41 @@ impl Component for ExplorerComponent {
                 _ => {}
             },
             ExplorerMessage::CanvasPointer(event) => self.canvas_pointer = Some(event),
+            ExplorerMessage::RenameFile(file) => {
+                self.last_file_action = Some(format!("Rename requested for {}", file_title(file)));
+            }
+            ExplorerMessage::DuplicateFile(file) => {
+                if !self.duplicated.contains(&file) {
+                    self.duplicated.push(file);
+                }
+                self.last_file_action = Some(format!("Duplicated {}", file_title(file)));
+            }
+            ExplorerMessage::DeleteFile(file) => {
+                if !self.deleted.contains(&file) {
+                    self.deleted.push(file);
+                }
+                if self.selected_file == Some(file) {
+                    self.selected_file = None;
+                }
+                self.last_file_action = Some(format!("Deleted {}", file_title(file)));
+            }
+            ExplorerMessage::ToggleFavoriteFile(file) => {
+                if let Some(index) = self
+                    .favorite_files
+                    .iter()
+                    .position(|favorite| *favorite == file)
+                {
+                    self.favorite_files.remove(index);
+                    self.last_file_action =
+                        Some(format!("Removed {} from favorites", file_title(file)));
+                } else {
+                    self.favorite_files.push(file);
+                    self.last_file_action = Some(format!("Favorited {}", file_title(file)));
+                }
+            }
+            ExplorerMessage::OpenFileWith(file, tool) => {
+                self.last_file_action = Some(format!("Opened {} in {tool}", file_title(file)));
+            }
         }
     }
 
@@ -308,6 +356,21 @@ impl Component for ExplorerComponent {
 
 fn announce(action: &'static str) -> impl Fn() {
     move || eprintln!("action={action}")
+}
+
+const fn file_title(key: FileKey) -> &'static str {
+    match key {
+        FileKey::Src => "src",
+        FileKey::Lib => "lib.rs",
+        FileKey::Main => "main.rs",
+        FileKey::Assets => "assets",
+        FileKey::AppIcon => "AppIcon.icon",
+        FileKey::PreviewAssets => "preview",
+        FileKey::Cargo => "Cargo.toml",
+        FileKey::Readme => "README.md",
+        FileKey::Preview => "design-preview.png",
+        FileKey::HiddenEnvironment => ".env",
+    }
 }
 
 /// Builds the complete native application contract.
@@ -647,6 +710,9 @@ fn directory_content(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessa
             label(scene_summary(model))
                 .text_role(TextRole::Secondary)
                 .with_key("item-summary"),
+            label(model.last_file_action.clone().unwrap_or_default())
+                .text_role(TextRole::Secondary)
+                .with_key("file-action-note"),
             spacer(true, false).with_key("status-space"),
             label(connection_status(model.scene))
                 .text_role(TextRole::Secondary)
@@ -918,10 +984,7 @@ fn canvas_test_pattern(pointer: Option<PointerEvent>) -> DrawScene {
 }
 
 fn file_list(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) -> Element {
-    let rows = file_records(model)
-        .into_iter()
-        .map(|record| file_row(record, model, dispatch.clone()))
-        .collect::<Vec<_>>();
+    let rows = file_rows(file_records(model), model, &dispatch);
 
     let column = |id: &'static str, title: &'static str| {
         if model.sort.column_id == id {
@@ -942,6 +1005,104 @@ fn file_list(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) -> 
         .with_key("file-list")
 }
 
+/// Builds the display rows for a record set, appending the native row for a
+/// duplicated copy directly after its original.
+fn file_rows(
+    records: Vec<FileRecord>,
+    model: &ExplorerComponent,
+    dispatch: &Dispatch<ExplorerMessage>,
+) -> Vec<Element> {
+    let mut rows = Vec::with_capacity(records.len());
+    for record in records {
+        rows.push(file_row(record, model, dispatch.clone()));
+        if model.duplicated.contains(&record.key) {
+            rows.push(copy_row(record));
+        }
+    }
+    rows
+}
+
+fn copy_row(record: FileRecord) -> Element {
+    let title = format!("{} copy", record.title);
+    let accessibility_label = format!("{title}, {}, {}", record.kind, record.size);
+    list_row(
+        title,
+        Some(format!("{} · {}", record.kind, record.size)),
+        Some(record.symbol),
+        false,
+        false,
+        accessibility_label,
+        announce("select-copy"),
+    )
+    .table_cells([record.modified, record.size, record.kind])
+    .with_key(format!("file-{:?}-copy", record.key))
+}
+
+fn file_context_menu(
+    record: FileRecord,
+    model: &ExplorerComponent,
+    dispatch: &Dispatch<ExplorerMessage>,
+) -> [MenuEntry; 7] {
+    let key = record.key;
+    let rename = dispatch.clone();
+    let duplicate = dispatch.clone();
+    let open_editor = dispatch.clone();
+    let open_terminal = dispatch.clone();
+    let favorite = dispatch.clone();
+    let delete = dispatch.clone();
+    [
+        MenuEntry::item(
+            MenuItem::new("rename", "Rename", move || {
+                rename.emit(ExplorerMessage::RenameFile(key));
+            })
+            .help("Rename this item"),
+        ),
+        MenuEntry::item(
+            MenuItem::new("duplicate", "Duplicate", move || {
+                duplicate.emit(ExplorerMessage::DuplicateFile(key));
+            })
+            .enabled(!model.duplicated.contains(&key))
+            .help("Create a copy next to this item"),
+        ),
+        MenuEntry::separator(),
+        MenuEntry::submenu(Submenu::new(
+            "open-with",
+            "Open With",
+            [
+                MenuEntry::item(
+                    MenuItem::new("open-editor", "Editor", move || {
+                        open_editor.emit(ExplorerMessage::OpenFileWith(key, "Editor"));
+                    })
+                    .symbol(Symbol::Code)
+                    .help("Open this item in the editor"),
+                ),
+                MenuEntry::item(
+                    MenuItem::new("open-terminal", "Terminal", move || {
+                        open_terminal.emit(ExplorerMessage::OpenFileWith(key, "Terminal"));
+                    })
+                    .symbol(Symbol::Terminal)
+                    .help("Open this item in the terminal"),
+                ),
+            ],
+        )),
+        MenuEntry::item(
+            MenuItem::new("favorite", "Favorite", move || {
+                favorite.emit(ExplorerMessage::ToggleFavoriteFile(key));
+            })
+            .checked(model.favorite_files.contains(&key))
+            .help("Keep this item in favorites"),
+        ),
+        MenuEntry::separator(),
+        MenuEntry::item(
+            MenuItem::new("delete", "Delete", move || {
+                delete.emit(ExplorerMessage::DeleteFile(key));
+            })
+            .destructive()
+            .help("Delete this item"),
+        ),
+    ]
+}
+
 fn file_row(
     record: FileRecord,
     model: &ExplorerComponent,
@@ -958,9 +1119,13 @@ fn file_row(
         move || select_dispatch.emit(ExplorerMessage::SelectFile(record.key)),
     )
     .table_cells([record.modified, record.size, record.kind])
+    .context_menu(file_context_menu(record, model, &dispatch))
     .with_key(format!("file-{:?}", record.key));
 
-    let children = child_file_records(record.key);
+    let children = child_file_records(record.key)
+        .into_iter()
+        .filter(|child| !model.deleted.contains(&child.key))
+        .collect::<Vec<_>>();
     if !children.is_empty() {
         let expanded = match record.key {
             FileKey::Src => model.src_expanded,
@@ -969,11 +1134,7 @@ fn file_row(
         };
         let expansion_dispatch = dispatch.clone();
         row = row
-            .list_children(
-                children
-                    .into_iter()
-                    .map(|child| file_row(child, model, dispatch.clone())),
-            )
+            .list_children(file_rows(children, model, &dispatch))
             .expanded(expanded)
             .on_expansion_change(move |value| {
                 expansion_dispatch.emit(ExplorerMessage::SetFileExpanded(record.key, value));
@@ -986,7 +1147,7 @@ fn file_records(model: &ExplorerComponent) -> Vec<FileRecord> {
     let mut records = vec![
         FileRecord {
             key: FileKey::Src,
-            title: "src",
+            title: file_title(FileKey::Src),
             modified: "Today",
             size: "—",
             kind: "Folder",
@@ -994,7 +1155,7 @@ fn file_records(model: &ExplorerComponent) -> Vec<FileRecord> {
         },
         FileRecord {
             key: FileKey::Assets,
-            title: "assets",
+            title: file_title(FileKey::Assets),
             modified: "Today",
             size: "18 items",
             kind: "Folder",
@@ -1002,7 +1163,7 @@ fn file_records(model: &ExplorerComponent) -> Vec<FileRecord> {
         },
         FileRecord {
             key: FileKey::Cargo,
-            title: "Cargo.toml",
+            title: file_title(FileKey::Cargo),
             modified: "Today, 10:42",
             size: "2.4 KB",
             kind: "TOML document",
@@ -1010,7 +1171,7 @@ fn file_records(model: &ExplorerComponent) -> Vec<FileRecord> {
         },
         FileRecord {
             key: FileKey::Readme,
-            title: "README.md",
+            title: file_title(FileKey::Readme),
             modified: "Yesterday",
             size: "6.8 KB",
             kind: "Markdown document",
@@ -1018,7 +1179,7 @@ fn file_records(model: &ExplorerComponent) -> Vec<FileRecord> {
         },
         FileRecord {
             key: FileKey::Preview,
-            title: "design-preview.png",
+            title: file_title(FileKey::Preview),
             modified: "Today",
             size: "842 KB",
             kind: "PNG image",
@@ -1028,13 +1189,14 @@ fn file_records(model: &ExplorerComponent) -> Vec<FileRecord> {
     if model.show_hidden {
         records.push(FileRecord {
             key: FileKey::HiddenEnvironment,
-            title: ".env",
+            title: file_title(FileKey::HiddenEnvironment),
             modified: "Today, 09:14",
             size: "312 bytes",
             kind: "Environment file",
             symbol: Symbol::File,
         });
     }
+    records.retain(|record| !model.deleted.contains(&record.key));
     records.sort_by(|left, right| {
         let order = match model.sort.column_id.as_str() {
             "modified" => left.modified.cmp(right.modified),
@@ -1055,7 +1217,7 @@ fn child_file_records(parent: FileKey) -> Vec<FileRecord> {
         FileKey::Src => vec![
             FileRecord {
                 key: FileKey::Lib,
-                title: "lib.rs",
+                title: file_title(FileKey::Lib),
                 modified: "Today, 10:38",
                 size: "9.1 KB",
                 kind: "Rust source",
@@ -1063,7 +1225,7 @@ fn child_file_records(parent: FileKey) -> Vec<FileRecord> {
             },
             FileRecord {
                 key: FileKey::Main,
-                title: "main.rs",
+                title: file_title(FileKey::Main),
                 modified: "Today, 10:41",
                 size: "3.7 KB",
                 kind: "Rust source",
@@ -1073,7 +1235,7 @@ fn child_file_records(parent: FileKey) -> Vec<FileRecord> {
         FileKey::Assets => vec![
             FileRecord {
                 key: FileKey::AppIcon,
-                title: "AppIcon.icon",
+                title: file_title(FileKey::AppIcon),
                 modified: "Yesterday",
                 size: "128 KB",
                 kind: "Icon Composer document",
@@ -1081,7 +1243,7 @@ fn child_file_records(parent: FileKey) -> Vec<FileRecord> {
             },
             FileRecord {
                 key: FileKey::PreviewAssets,
-                title: "preview",
+                title: file_title(FileKey::PreviewAssets),
                 modified: "Yesterday",
                 size: "12 items",
                 kind: "Folder",
@@ -1268,7 +1430,12 @@ fn activity_panel() -> WindowSpec {
 fn scene_summary(model: &ExplorerComponent) -> String {
     match model.scene {
         Scene::Ready => {
-            let count = file_records(model).len();
+            let records = file_records(model);
+            let copies = records
+                .iter()
+                .filter(|record| model.duplicated.contains(&record.key))
+                .count();
+            let count = records.len() + copies;
             let selected = usize::from(model.selected_file.is_some());
             format!("{count} items · {selected} selected")
         }
