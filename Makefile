@@ -1,6 +1,9 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help install typecheck lint test build dev fixture surface macos-demo macos-bundle macos-accelerator-probe macos-clipboard-probe macos-scene-matrix macos-transition-matrix macos-transition-visual-matrix macos-visual-matrix gtk-demo gtk-scene-matrix gtk-wayland-smoke gtk-gnome-shell-smoke windows-bootstrap windows-demo windows-scene-matrix help: @printf '%s\n' 'install typecheck lint test build dev fixture surface macos-demo macos-bundle macos-accelerator-probe macos-clipboard-probe macos-scene-matrix macos-transition-matrix macos-transition-visual-matrix macos-visual-matrix gtk-demo gtk-scene-matrix gtk-wayland-smoke gtk-gnome-shell-smoke windows-bootstrap windows-demo windows-scene-matrix' macos-dialog-probe macos-dialog-probe
+.PHONY: help install typecheck lint test build dev fixture surface macos-demo macos-bundle macos-accelerator-probe macos-clipboard-probe macos-dialog-probe macos-scene-matrix macos-transition-matrix macos-transition-visual-matrix macos-visual-matrix gtk-demo gtk-scene-matrix gtk-wayland-smoke gtk-gnome-shell-smoke windows-bootstrap windows-demo windows-scene-matrix
+
+help:
+	@printf '%s\n' 'install typecheck lint test build dev fixture surface macos-demo macos-bundle macos-accelerator-probe macos-clipboard-probe macos-dialog-probe macos-scene-matrix macos-transition-matrix macos-transition-visual-matrix macos-visual-matrix gtk-demo gtk-scene-matrix gtk-wayland-smoke gtk-gnome-shell-smoke windows-bootstrap windows-demo windows-scene-matrix'
 
 install:
 	@cargo fetch
