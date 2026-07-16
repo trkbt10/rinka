@@ -8,6 +8,8 @@ use rinka_core::{ApplicationSpec, Element, ElementKind, PanelBehavior, WindowKin
 use std::error::Error;
 use std::fmt;
 
+pub mod accelerator_mapping;
+
 #[cfg(target_os = "windows")]
 mod platform;
 
@@ -49,6 +51,15 @@ pub enum WinUiDiagnostic {
         /// Stable capability identifier.
         capability: &'static str,
     },
+    /// A window declared an accelerator table this host does not deliver yet.
+    ///
+    /// The KeyboardAccelerator integration is tracked in
+    /// `reports/keyboard-shortcuts-and-key-events`; rejecting the table keeps
+    /// the contract honest instead of silently dropping declared chords.
+    UnsupportedAccelerators {
+        /// Stable window identity.
+        window_id: String,
+    },
     /// Common content was structurally invalid at initial projection time.
     Projection(String),
     /// The Windows App SDK host returned a native error.
@@ -82,6 +93,10 @@ impl fmt::Display for WinUiDiagnostic {
             Self::UnsupportedElementCapability { kind, capability } => write!(
                 formatter,
                 "WinUI host does not implement {capability} for {kind:?}"
+            ),
+            Self::UnsupportedAccelerators { window_id } => write!(
+                formatter,
+                "window '{window_id}' declares an accelerator table the WinUI host does not deliver yet"
             ),
             Self::Projection(message) => write!(formatter, "common projection failed: {message}"),
             Self::Native(message) => write!(formatter, "WinUI 3 host failed: {message}"),
@@ -133,7 +148,13 @@ fn validate_application(application: &ApplicationSpec) -> Result<(), WinUiDiagno
                 });
             }
         }
-        validate_content(window.id.as_str(), &window.content.snapshot())?;
+        let snapshot = window.content.snapshot();
+        if !snapshot.accelerator_table().is_empty() {
+            return Err(WinUiDiagnostic::UnsupportedAccelerators {
+                window_id: window.id.as_str().to_owned(),
+            });
+        }
+        validate_content(window.id.as_str(), &snapshot)?;
     }
     match main_windows {
         0 => Err(WinUiDiagnostic::MissingMainWindow),
@@ -205,8 +226,8 @@ pub fn run(application: ApplicationSpec) -> Result<(), WinUiDiagnostic> {
 mod tests {
     use super::{WinUiDiagnostic, resolve_workspace_visibility, validate_application};
     use rinka_core::{
-        ApplicationSpec, PanelBehavior, Size, ToolbarDisplay, WindowContent, WindowId, WindowKind,
-        WindowSpec, label,
+        Accelerator, ApplicationSpec, PanelBehavior, Size, ToolbarDisplay, WindowContent, WindowId,
+        WindowKind, WindowSpec, column, label,
     };
 
     fn window(id: &str, kind: WindowKind) -> WindowSpec {
@@ -308,6 +329,27 @@ mod tests {
             Err(super::WinUiDiagnostic::UnsupportedElement {
                 window_id: "main".to_owned(),
                 element: rinka_core::ElementKind::Image,
+            })
+        );
+    }
+
+    #[test]
+    fn declared_accelerator_tables_are_a_typed_diagnostic() {
+        let mut shortcut_window = window("main", WindowKind::Main);
+        shortcut_window.content = WindowContent::from(
+            column([label("main").with_key("title")])
+                .with_key("root")
+                .accelerators([Accelerator::new(
+                    "save",
+                    "Primary+S".parse().expect("test chord"),
+                    || {},
+                )]),
+        );
+
+        assert_eq!(
+            validate_application(&application(vec![shortcut_window])),
+            Err(WinUiDiagnostic::UnsupportedAccelerators {
+                window_id: "main".to_owned(),
             })
         );
     }

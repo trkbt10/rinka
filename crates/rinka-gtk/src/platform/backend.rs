@@ -68,6 +68,16 @@ impl NativeBackend for GtkBackend {
 }
 
 fn validate_element(element: &Element) -> Result<(), GtkError> {
+    if !element.accelerator_table().is_empty() {
+        // GtkShortcutController mapping is not implemented yet; rejecting the
+        // declared table keeps the contract honest instead of silently
+        // dropping chords (reports/keyboard-shortcuts-and-key-events). The
+        // chord-to-trigger mapping is already provided and unit-tested in
+        // crate::accelerator_mapping for that integration.
+        return Err(GtkError(
+            "declared accelerator tables are not yet delivered by the GTK host".to_owned(),
+        ));
+    }
     if let Some(name) = element.props().accessibility_name() {
         require_text("accessibility name", name)?;
     }

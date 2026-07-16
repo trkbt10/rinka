@@ -56,6 +56,15 @@ impl Error for WindowsDiagnostic {}
 
 /// Validates one element against native Windows semantic capabilities.
 pub fn validate_element(element: &Element) -> Result<(), WindowsDiagnostic> {
+    if !element.accelerator_table().is_empty() {
+        // The Win32 contract probe has no accelerator-table delivery
+        // (reports/keyboard-shortcuts-and-key-events); the declared table is
+        // rejected instead of silently dropped.
+        return Err(WindowsDiagnostic::UnsupportedCapability {
+            element: element.kind(),
+            capability: "declared accelerator table",
+        });
+    }
     if let Props::Button {
         material: ButtonMaterial::Glass,
         ..
@@ -146,6 +155,25 @@ mod tests {
             Err(WindowsDiagnostic::UnsupportedCapability {
                 element: ElementKind::Image,
                 capability: "bitmap image element",
+            })
+        );
+    }
+
+    #[test]
+    fn declared_accelerator_tables_are_a_typed_diagnostic() {
+        use rinka_core::{Accelerator, column, label};
+        let element = column([label("main").with_key("title")])
+            .with_key("root")
+            .accelerators([Accelerator::new(
+                "save",
+                "Primary+S".parse().expect("test chord"),
+                || {},
+            )]);
+        assert_eq!(
+            validate_element(&element),
+            Err(WindowsDiagnostic::UnsupportedCapability {
+                element: ElementKind::Stack,
+                capability: "declared accelerator table",
             })
         );
     }

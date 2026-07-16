@@ -3,6 +3,8 @@
 /// Identifies this platform adapter in diagnostics.
 pub const PLATFORM_NAME: &str = "GTK 4 + libadwaita";
 
+pub mod accelerator_mapping;
+
 #[cfg(target_os = "linux")]
 mod platform;
 
