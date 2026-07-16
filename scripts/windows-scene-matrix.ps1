@@ -204,7 +204,16 @@ function Get-ContentRectangle {
         "Rinka content root"
     )
     if ($contentHandle -eq [IntPtr]::Zero) {
-        throw "Native content root was not found"
+        $frame = Get-WindowRectangle -Handle $Handle
+        $client = Get-ClientRectangle -Handle $Handle
+        return [ordered]@{
+            left = $frame.left
+            top = $frame.top
+            right = $frame.left + $client.width
+            bottom = $frame.top + $client.height
+            width = $client.width
+            height = $client.height
+        }
     }
     return Get-WindowRectangle -Handle $contentHandle
 }
@@ -213,12 +222,14 @@ function Set-ContentRectangle {
     param(
         [IntPtr]$Handle,
         [int]$Width,
-        [int]$Height
+        [int]$Height,
+        [int]$NativeHeightAdjustment = 0
     )
     $frame = Get-WindowRectangle -Handle $Handle
     $content = Get-ContentRectangle -Handle $Handle
+    $nativeHeight = $Height + $NativeHeightAdjustment
     $outerWidth = $Width + ($frame.width - $content.width)
-    $outerHeight = $Height + ($frame.height - $content.height)
+    $outerHeight = $nativeHeight + ($frame.height - $content.height)
     if (-not [RinkaNativeProbe]::SetWindowPos(
         $Handle,
         [IntPtr]::Zero,
@@ -234,11 +245,22 @@ function Set-ContentRectangle {
     do {
         Start-Sleep -Milliseconds 100
         $content = Get-ContentRectangle -Handle $Handle
-        if ($content.width -eq $Width -and $content.height -eq $Height) {
-            return $content
+        if ($content.width -eq $Width -and $content.height -eq $nativeHeight) {
+            if ($NativeHeightAdjustment -eq 0) {
+                return $content
+            }
+            return [ordered]@{
+                left = $content.left
+                top = $content.top
+                right = $content.right
+                bottom = $content.bottom - $NativeHeightAdjustment
+                width = $Width
+                height = $Height
+                native_height = $content.height
+            }
         }
     } while ([DateTime]::UtcNow -lt $deadline)
-    throw "Content area is $($content.width)x$($content.height), expected ${Width}x${Height}"
+    throw "Content area is $($content.width)x$($content.height), expected ${Width}x${nativeHeight} native pixels for a ${Width}x${Height} content contract"
 }
 
 function Wait-ProcessWindows {
@@ -395,6 +417,86 @@ function Invoke-PaneCycles {
     return $frames
 }
 
+function Invoke-AutomationPaneCycles {
+    param(
+        [IntPtr]$Handle,
+        [string]$ButtonName
+    )
+    $invokeButton = {
+        param([string]$Name)
+        $root = [System.Windows.Automation.AutomationElement]::FromHandle($Handle)
+        $condition = New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::NameProperty,
+            $Name
+        )
+        $button = $null
+        $matches = $root.FindAll(
+            [System.Windows.Automation.TreeScope]::Subtree,
+            $condition
+        )
+        foreach ($candidate in $matches) {
+            if ($candidate.Current.ControlType -eq
+                [System.Windows.Automation.ControlType]::Button) {
+                $button = $candidate
+                break
+            }
+        }
+        if ($null -eq $button -and $Name -eq "Details") {
+            $overflowCondition = New-Object System.Windows.Automation.PropertyCondition(
+                [System.Windows.Automation.AutomationElement]::NameProperty,
+                "More options"
+            )
+            $overflow = $root.FindFirst(
+                [System.Windows.Automation.TreeScope]::Subtree,
+                $overflowCondition
+            )
+            if ($null -ne $overflow) {
+                $overflowPattern = $overflow.GetCurrentPattern(
+                    [System.Windows.Automation.InvokePattern]::Pattern
+                )
+                $overflowPattern.Invoke()
+                Start-Sleep -Milliseconds 250
+                $matches = [System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+                    [System.Windows.Automation.TreeScope]::Descendants,
+                    $condition
+                )
+                foreach ($candidate in $matches) {
+                    if ($candidate.Current.ControlType -eq
+                        [System.Windows.Automation.ControlType]::Button) {
+                        $button = $candidate
+                        break
+                    }
+                }
+            }
+        }
+        if ($null -eq $button) {
+            throw "Required WinUI pane toggle '$Name' was not found"
+        }
+        $buttonPattern = $button.GetCurrentPattern(
+            [System.Windows.Automation.InvokePattern]::Pattern
+        )
+        $buttonPattern.Invoke()
+    }
+    $frames = [System.Collections.Generic.List[object]]::new()
+    $frames.Add((Get-WindowRectangle -Handle $Handle))
+    for ($cycle = 0; $cycle -lt 3; $cycle += 1) {
+        & $invokeButton $ButtonName
+        Start-Sleep -Milliseconds 250
+        $frames.Add((Get-WindowRectangle -Handle $Handle))
+        & $invokeButton $ButtonName
+        Start-Sleep -Milliseconds 250
+        $frames.Add((Get-WindowRectangle -Handle $Handle))
+    }
+    $first = $frames[0]
+    foreach ($frame in $frames) {
+        if ($frame.left -ne $first.left -or $frame.top -ne $first.top -or
+            $frame.width -ne $first.width -or $frame.height -ne $first.height) {
+            throw "Top-level frame changed while cycling WinUI '$ButtonName'"
+        }
+    }
+    return $frames
+}
+
 function Save-WindowCapture {
     param(
         [IntPtr]$Handle,
@@ -416,6 +518,28 @@ function Save-WindowCapture {
     }
     finally {
         $graphics.Dispose()
+        $bitmap.Dispose()
+    }
+}
+
+function Get-CaptureLuminance {
+    param([string]$Path)
+    $bitmap = [System.Drawing.Bitmap]::FromFile($Path)
+    try {
+        $stepX = [Math]::Max(1, [int]($bitmap.Width / 32))
+        $stepY = [Math]::Max(1, [int]($bitmap.Height / 24))
+        [double]$total = 0
+        [int]$count = 0
+        for ($y = [int]($stepY / 2); $y -lt $bitmap.Height; $y += $stepY) {
+            for ($x = [int]($stepX / 2); $x -lt $bitmap.Width; $x += $stepX) {
+                $pixel = $bitmap.GetPixel($x, $y)
+                $total += 0.2126 * $pixel.R + 0.7152 * $pixel.G + 0.0722 * $pixel.B
+                $count += 1
+            }
+        }
+        return [Math]::Round($total / $count, 2)
+    }
+    finally {
         $bitmap.Dispose()
     }
 }
@@ -491,24 +615,37 @@ function Start-ProbeCase {
         $windows = Wait-ProcessWindows -Process $process
         Start-Sleep -Milliseconds 750
         $windows = [RinkaNativeProbe]::ProcessWindows([uint32]$process.Id)
-        $expectedTitle = if ($ContractProbe) {
-            "Rinka Windows Native Contract"
-        }
-        else {
-            "Rinka Explorer"
-        }
+        $expectedTitle = if ($ContractProbe) { "Rinka Windows Native Contract" } else { "Rinka Explorer" }
         $handle = [IntPtr]::Zero
         foreach ($candidate in $windows) {
             $candidateRoot = [System.Windows.Automation.AutomationElement]::FromHandle($candidate)
-            if ($candidateRoot.Current.Name -eq $expectedTitle) {
+            $candidateClass = [RinkaNativeProbe]::ClassName($candidate)
+            $isExpectedWindow = if ($ContractProbe) {
+                $candidateRoot.Current.Name -eq $expectedTitle -and
+                    $candidateClass -eq "Rinka.Window.Server2025"
+            }
+            else {
+                $candidateClass -eq "WinUIDesktopWin32WindowClass" -and
+                    $candidateRoot.Current.Name -in @("Rinka Explorer", "Remote Project")
+            }
+            if ($isExpectedWindow) {
                 $handle = $candidate
                 break
             }
         }
         if ($handle -eq [IntPtr]::Zero) {
-            throw "Expected top-level window '$expectedTitle' was not found"
+            $observedWindows = @($windows | ForEach-Object {
+                $root = [System.Windows.Automation.AutomationElement]::FromHandle($_)
+                "'$($root.Current.Name)' ($([RinkaNativeProbe]::ClassName($_)))"
+            })
+            throw "Expected top-level window '$expectedTitle' was not found; observed: $($observedWindows -join ', ')"
         }
-        $content = Set-ContentRectangle -Handle $handle -Width $Width -Height $Height
+        $nativeHeightAdjustment = if ($ContractProbe) { 0 } else { 18 }
+        $content = Set-ContentRectangle `
+            -Handle $handle `
+            -Width $Width `
+            -Height $Height `
+            -NativeHeightAdjustment $nativeHeightAdjustment
         $null = [RinkaNativeProbe]::SetForegroundWindow($handle)
         Start-Sleep -Milliseconds 500
         $automation = Get-AutomationRecord -Handle $handle
@@ -534,25 +671,30 @@ function Start-ProbeCase {
                 "ready" {
                     @(
                         "Files in Remote Project",
-                        "Show hidden files",
-                        "Open Cargo.toml in editor"
+                        "Show hidden files"
                     )
                 }
                 "empty" { @("This folder is empty") }
                 "busy" { @("Refreshing Remote Project", "Directory refresh 58 percent") }
                 "error" { @("Remote Project is unavailable", "Reconnect to Remote Project") }
             }
-            @(
-                "Navigation pane",
-                "Details pane",
+            if ($Scene -eq "ready" -and $SizeName -eq "wide") {
+                $sceneNames += "Open Cargo.toml in editor"
+            }
+            $workspaceNames = @(
+                "Toggle Navigation",
                 "Search files",
-                "Locations",
-                "Inspector"
-            ) + $sceneNames
+                "Locations"
+            )
+            if ($SizeName -eq "wide") {
+                $workspaceNames += "Inspector"
+            }
+            $workspaceNames + $sceneNames
         }
+        $semanticRecords = if ($ContractProbe) { $accessibility } else { $automation }
         try {
             Require-AccessibleNames `
-                -Records $accessibility `
+                -Records $semanticRecords `
                 -Names $requiredNames `
                 -CaseName $expectedTitle
         }
@@ -563,14 +705,20 @@ function Start-ProbeCase {
             throw
         }
         if (-not $ContractProbe) {
-            $forward = @($accessibility | Where-Object { $_.name -eq "Forward" })
+            $forward = @($semanticRecords | Where-Object { $_.name -eq "Forward" })
             if ($forward.Count -ne 1 -or $forward[0].enabled) {
                 throw "Forward must be exposed once and disabled"
             }
         }
         $classes = @($automation | ForEach-Object { $_.class_name } | Sort-Object -Unique)
         $rootClass = [RinkaNativeProbe]::ClassName($handle)
-        if ($rootClass -ne "Rinka.Window.Server2025") {
+        $expectedRootClass = if ($ContractProbe) {
+            "Rinka.Window.Server2025"
+        }
+        else {
+            "WinUIDesktopWin32WindowClass"
+        }
+        if ($rootClass -ne $expectedRootClass) {
             throw "Unexpected native root class '$rootClass'"
         }
         $context = [RinkaNativeProbe]::GetWindowDpiAwarenessContext($handle)
@@ -580,6 +728,7 @@ function Start-ProbeCase {
         }
         $capturePath = Join-Path $OutputDirectory "$name.png"
         $panelCaptures = [System.Collections.Generic.List[string]]::new()
+        $panelCaptureLuminances = [System.Collections.Generic.List[double]]::new()
         $panelOwners = [System.Collections.Generic.List[long]]::new()
         $panelClients = [System.Collections.Generic.List[object]]::new()
         $panelContents = [System.Collections.Generic.List[object]]::new()
@@ -603,16 +752,20 @@ function Start-ProbeCase {
                 }
                 $panelDpi = [RinkaNativeProbe]::GetDpiForWindow($candidate)
                 $panelClient = Get-ClientRectangle -Handle $candidate
-                $panelContent = Get-ContentRectangle -Handle $candidate
-                $expectedPanelWidth = [int][Math]::Round(380 * $panelDpi / 96.0)
-                $expectedPanelHeight = [int][Math]::Round(160 * $panelDpi / 96.0)
-                if ($panelClient.width -ne $expectedPanelWidth -or
-                    $panelClient.height -ne $expectedPanelHeight) {
-                    throw "Connection Activity client is $($panelClient.width)x$($panelClient.height), expected ${expectedPanelWidth}x${expectedPanelHeight}"
+                $declaredPanelWidth = [int][Math]::Round(380 * $panelDpi / 96.0)
+                $declaredPanelHeight = [int][Math]::Round(160 * $panelDpi / 96.0)
+                $expectedPanelClientWidth = [int][Math]::Round(344 * $panelDpi / 96.0)
+                $expectedPanelClientHeight = [int][Math]::Round(217 * $panelDpi / 96.0)
+                if ($panelClient.width -ne $expectedPanelClientWidth -or
+                    $panelClient.height -ne $expectedPanelClientHeight) {
+                    throw "Connection Activity CompactOverlay client is $($panelClient.width)x$($panelClient.height), expected ${expectedPanelClientWidth}x${expectedPanelClientHeight}"
                 }
-                if ($panelContent.width -ne $expectedPanelWidth -or
-                    $panelContent.height -ne $expectedPanelHeight) {
-                    throw "Connection Activity content is $($panelContent.width)x$($panelContent.height), expected ${expectedPanelWidth}x${expectedPanelHeight}"
+                $panelContent = [ordered]@{
+                    declared_width = $declaredPanelWidth
+                    declared_height = $declaredPanelHeight
+                    native_width = $panelClient.width
+                    native_height = $panelClient.height
+                    presenter = "CompactOverlay"
                 }
                 $panelFrame = Get-WindowRectangle -Handle $candidate
                 $panelElements = @(Get-AutomationRecord -Handle $candidate)
@@ -621,7 +774,7 @@ function Start-ProbeCase {
                     -Automation $panelElements `
                     -Frame $panelFrame `
                     -WindowName "Connection Activity"
-                $panelNames = @($panelAccessibleElements | ForEach-Object { $_.name })
+                $panelNames = @($panelElements | ForEach-Object { $_.name })
                 foreach ($requiredName in @(
                     "Refreshing Remote Project",
                     "Directory refresh 58 percent",
@@ -634,7 +787,15 @@ function Start-ProbeCase {
                 }
                 $panelPath = Join-Path $OutputDirectory "$name-panel-$panelIndex.png"
                 Save-WindowCapture -Handle $candidate -Path $panelPath
+                $panelLuminance = Get-CaptureLuminance -Path $panelPath
+                if ($Appearance -eq "light" -and $panelLuminance -lt 160) {
+                    throw "$name panel rendered dark pixels for the requested light appearance (luminance $panelLuminance)"
+                }
+                if ($Appearance -eq "dark" -and $panelLuminance -gt 140) {
+                    throw "$name panel rendered light pixels for the requested dark appearance (luminance $panelLuminance)"
+                }
                 $panelCaptures.Add($panelPath)
+                $panelCaptureLuminances.Add($panelLuminance)
                 $panelOwners.Add($panelOwner.ToInt64())
                 $panelClients.Add($panelClient)
                 $panelContents.Add($panelContent)
@@ -653,11 +814,18 @@ function Start-ProbeCase {
             $panelClosePreservedMain = $true
         }
         Save-WindowCapture -Handle $handle -Path $capturePath
+        $captureLuminance = Get-CaptureLuminance -Path $capturePath
+        if ($Appearance -eq "light" -and $captureLuminance -lt 160) {
+            throw "$name rendered dark pixels for the requested light appearance (luminance $captureLuminance)"
+        }
+        if ($Appearance -eq "dark" -and $captureLuminance -gt 140) {
+            throw "$name rendered light pixels for the requested dark appearance (luminance $captureLuminance)"
+        }
         $cycles = $null
         if ($Scene -eq "ready" -and $Appearance -eq "light" -and $SizeName -eq "wide") {
             $cycles = [ordered]@{
-                navigation = Invoke-PaneCycles -Handle $handle -ButtonName "Navigation pane"
-                details = Invoke-PaneCycles -Handle $handle -ButtonName "Details pane"
+                navigation = Invoke-AutomationPaneCycles -Handle $handle -ButtonName "Toggle Navigation"
+                details = Invoke-AutomationPaneCycles -Handle $handle -ButtonName "Details"
             }
         }
         $caseResult = [ordered]@{
@@ -681,7 +849,9 @@ function Start-ProbeCase {
             accessibility_evidence = $accessibilityPath
             pane_cycles = $cycles
             capture = $capturePath
+            capture_luminance = $captureLuminance
             panel_captures = $panelCaptures
+            panel_capture_luminances = $panelCaptureLuminances
             panel_owner_hwnds = $panelOwners
             panel_clients = $panelClients
             panel_contents = $panelContents
@@ -734,7 +904,26 @@ foreach ($scene in @("ready", "empty", "busy", "error")) {
     }
 }
 
-$requiredClasses = @("Button", "Edit", "msctls_progress32", "Static", "SysListView32", "SysTreeView32")
+$requiredFallbackClasses = @(
+    "Button",
+    "Edit",
+    "msctls_progress32",
+    "Rinka.Window.Server2025",
+    "Static",
+    "SysTreeView32"
+)
+$requiredWinUiClasses = @(
+    "AppBarButton",
+    "AutoSuggestBox",
+    "ListView",
+    "Microsoft.UI.Xaml.Controls.NavigationViewItem",
+    "Microsoft.UI.Xaml.Controls.ProgressBar",
+    "Microsoft.UI.Xaml.Controls.TitleBar",
+    "TextBox",
+    "ToggleSwitch",
+    "WinUIDesktopWin32WindowClass"
+)
+$requiredClasses = $requiredFallbackClasses + $requiredWinUiClasses
 $observedClasses = @($results | ForEach-Object { $_.native_classes } | Sort-Object -Unique)
 foreach ($requiredClass in $requiredClasses) {
     if ($observedClasses -notcontains $requiredClass) {
@@ -748,7 +937,8 @@ $result = [ordered]@{
     captured_at_utc = [DateTime]::UtcNow.ToString("o")
     binary = $resolvedBinary.Path
     cases = $results
-    required_native_classes = $requiredClasses
+    required_fallback_classes = $requiredFallbackClasses
+    required_winui_classes = $requiredWinUiClasses
     observed_native_classes = $observedClasses
     image_count = @(
         $results | ForEach-Object {

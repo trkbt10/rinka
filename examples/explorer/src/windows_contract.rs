@@ -1,9 +1,9 @@
 //! Executable consumer probe covering every declarative element kind on Windows.
 
 use rinka::{
-    ApplicationSpec, Axis, InputKind, ListStyle, Size, SplitRole, StatusTone, Symbol,
-    ToolbarDisplay, WindowId, WindowKind, WindowSpec, button, column, input, label, list, list_row,
-    progress, row, scroll, separator, spacer, split, status, toggle, workspace,
+    ApplicationSpec, Axis, CollectionPattern, InputKind, Size, StatusTone, Symbol, ToolbarDisplay,
+    UiPattern, WindowId, WindowKind, WindowSpec, button, column, input, label, list, list_row,
+    mount_pattern, progress, row, scroll, separator, spacer, status, toggle,
 };
 
 /// Builds a headful native-control contract probe.
@@ -20,7 +20,7 @@ pub fn application() -> ApplicationSpec {
             || {},
         )],
     )
-    .list_style(ListStyle::Source)
+    .collection_pattern(CollectionPattern::NavigationSidebar)
     .with_key("contract-navigation");
 
     let form = column([
@@ -58,13 +58,16 @@ pub fn application() -> ApplicationSpec {
     ])
     .with_key("contract-form");
 
-    let inspector = split(
-        SplitRole::Utility,
-        true,
-        column([label("Properties")]).with_key("contract-properties"),
-        column([label("Events")]).with_key("contract-events"),
+    let inspector = mount_pattern(
+        UiPattern::UtilitySplit {
+            inspector_collapsible: true,
+        },
+        [
+            column([label("Properties")]).with_key("contract-properties"),
+            column([label("Events")]).with_key("contract-events"),
+        ],
     )
-    .with_key("contract-split");
+    .with_key("contract-utility-split");
 
     ApplicationSpec {
         id: "jp.bunko.rinka.windows-contract".to_owned(),
@@ -77,9 +80,15 @@ pub fn application() -> ApplicationSpec {
             minimum_size: Size::new(760.0, 520.0),
             toolbar: Vec::new(),
             toolbar_display: ToolbarDisplay::IconAndLabel,
-            content: workspace(true, true, navigation, form, inspector)
-                .with_key("contract-workspace")
-                .into(),
+            content: mount_pattern(
+                UiPattern::NavigationWorkspace {
+                    sidebar_collapsible: true,
+                    inspector_collapsible: true,
+                },
+                [navigation, form, inspector],
+            )
+            .with_key("contract-workspace")
+            .into(),
         }],
     }
 }

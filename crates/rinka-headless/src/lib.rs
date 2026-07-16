@@ -199,7 +199,7 @@ impl NativeBackend for HeadlessBackend {
 
     fn apply(&mut self, handle: &Self::Handle, patch: &PropertyPatch) -> Result<(), Self::Error> {
         let node = self.node_mut(handle)?;
-        patch.apply_to(&mut node.props);
+        node.props.clone_from(patch.props());
         self.operations.push(Operation::Patch {
             handle: *handle,
             patch: patch.clone(),

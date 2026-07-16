@@ -6,6 +6,7 @@
 mod backend;
 mod element;
 mod event;
+mod pattern;
 mod projection;
 mod reconcile;
 mod runtime;
@@ -16,16 +17,17 @@ mod window;
 
 pub use backend::{NativeBackend, PropertyPatch};
 pub use element::{
-    Element, Key, button, column, input, label, list, list_row, progress, row, scroll, separator,
-    spacer, split, status, toggle, workspace,
+    Element, Key, button, column, input, label, list, list_row, mount_pattern, progress, row,
+    scroll, separator, spacer, status, toggle,
 };
 pub use event::{ActivateHandler, EventBindings, InputHandler, SortHandler, ToggleHandler};
+pub use pattern::{PatternRegion, UiPattern};
 pub use projection::{ProjectedHandle, WindowProjection};
 pub use reconcile::{MountedNode, RenderError, RenderStats, Renderer};
 pub use runtime::{AppRuntime, Component, Dispatch, WindowRuntime};
 pub use semantics::{
-    Align, Axis, ButtonMaterial, ButtonRole, ControlSize, ElementKind, InputKind, Justify,
-    ListRowRole, ListStyle, Props, SortDirection, Spacing, SplitRole, StatusTone, Symbol,
+    Align, Axis, ButtonMaterial, ButtonRole, CollectionPattern, ControlSize, ElementKind,
+    InputKind, Justify, ListRowRole, Props, SortDirection, Spacing, StatusTone, Symbol,
     TableColumn, TableSort, TextRole,
 };
 pub use toolbar::{

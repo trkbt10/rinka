@@ -79,7 +79,7 @@ pub use platform::{WindowsHandle, run};
 /// Reports a programming error when invoked on another operating system.
 pub fn run(_application: rinka_core::ApplicationSpec) -> Result<(), WindowsDiagnostic> {
     Err(WindowsDiagnostic::UnsupportedCapability {
-        element: ElementKind::Workspace,
+        element: ElementKind::Pattern,
         capability: "Windows desktop process",
     })
 }

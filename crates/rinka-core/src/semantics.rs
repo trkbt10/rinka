@@ -21,10 +21,8 @@ pub enum ElementKind {
     Stack,
     /// Scrolling container.
     Scroll,
-    /// Resizable two-pane container.
-    Split,
-    /// Native sidebar, content, and inspector workspace.
-    Workspace,
+    /// Mounted standard desktop UI pattern.
+    Pattern,
     /// Native list container.
     List,
     /// Native list row.
@@ -144,34 +142,39 @@ pub enum InputKind {
     Secure,
 }
 
-/// Meaning of a two-pane arrangement.
+/// Platform-neutral collection pattern routed to native list controls.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum SplitRole {
-    /// Navigation sidebar and content.
-    Navigation,
-    /// Content and a secondary utility pane.
-    Utility,
-}
-
-/// Native list presentation intent.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum ListStyle {
-    /// Navigation source list with platform selection treatment.
-    Source,
-    /// Primary content list or table.
-    Content,
+pub enum CollectionPattern {
+    /// Leading navigation sidebar, optionally with sections and hierarchy.
+    NavigationSidebar,
+    /// Hierarchical content whose rows expand and collapse.
+    Outline,
+    /// Primary flat content list.
+    ContentList,
     /// Column-oriented data table.
-    Table,
-    /// Undecorated list embedded in another surface.
-    Plain,
+    DataTable,
+    /// Undecorated list embedded inside another surface.
+    EmbeddedList,
 }
 
-/// Semantic role of one source-list row.
+impl CollectionPattern {
+    /// Returns whether rows may contain declarative child rows.
+    pub const fn supports_hierarchy(self) -> bool {
+        matches!(self, Self::NavigationSidebar | Self::Outline)
+    }
+
+    /// Returns whether the collection declares native columns.
+    pub const fn presents_columns(self) -> bool {
+        matches!(self, Self::DataTable)
+    }
+}
+
+/// Semantic role of one collection row.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ListRowRole {
-    /// Selectable source or content item.
+    /// Selectable navigation or content item.
     Item,
-    /// Native source-list section heading.
+    /// Native collection section heading.
     Section,
 }
 
@@ -388,26 +391,17 @@ pub enum Props {
         /// Scrolling direction.
         axis: Axis,
     },
-    /// Split-view properties.
-    Split {
-        /// Pane arrangement.
-        role: SplitRole,
-        /// Whether the secondary pane can be hidden or collapsed.
-        collapsible: bool,
-    },
-    /// Three-region navigation workspace properties.
-    Workspace {
-        /// Whether the navigation sidebar can be hidden or collapsed.
-        sidebar_collapsible: bool,
-        /// Whether the utility inspector can be hidden or collapsed.
-        inspector_collapsible: bool,
+    /// Standard desktop UI pattern properties.
+    Pattern {
+        /// Platform-neutral pattern routed by the native adapter.
+        pattern: crate::UiPattern,
     },
     /// List container properties.
     List {
         /// Screen-reader description.
         accessibility_label: String,
-        /// Native list treatment.
-        style: ListStyle,
+        /// Native collection treatment.
+        pattern: CollectionPattern,
         /// Native columns when the list uses table presentation.
         columns: Vec<TableColumn>,
     },
@@ -421,7 +415,7 @@ pub enum Props {
         cells: Vec<String>,
         /// Source-list item or section semantics.
         role: ListRowRole,
-        /// Controlled source-list expansion state.
+        /// Controlled hierarchical expansion state.
         expanded: bool,
         /// Platform symbol name.
         symbol: Option<Symbol>,
@@ -444,6 +438,39 @@ pub enum Props {
 }
 
 impl Props {
+    /// Returns the native accessibility name derived from these properties.
+    pub fn accessibility_name(&self) -> Option<&str> {
+        match self {
+            Self::Label { text, .. } => Some(text),
+            Self::Button {
+                accessibility_label,
+                ..
+            }
+            | Self::Input {
+                accessibility_label,
+                ..
+            }
+            | Self::Toggle {
+                accessibility_label,
+                ..
+            }
+            | Self::Progress {
+                accessibility_label,
+                ..
+            }
+            | Self::List {
+                accessibility_label,
+                ..
+            }
+            | Self::ListRow {
+                accessibility_label,
+                ..
+            } => Some(accessibility_label),
+            Self::Status { title, .. } => Some(title),
+            _ => None,
+        }
+    }
+
     /// Returns the category represented by these properties.
     pub fn kind(&self) -> ElementKind {
         match self {
@@ -456,8 +483,7 @@ impl Props {
             Self::Spacer { .. } => ElementKind::Spacer,
             Self::Stack { .. } => ElementKind::Stack,
             Self::Scroll { .. } => ElementKind::Scroll,
-            Self::Split { .. } => ElementKind::Split,
-            Self::Workspace { .. } => ElementKind::Workspace,
+            Self::Pattern { .. } => ElementKind::Pattern,
             Self::List { .. } => ElementKind::List,
             Self::ListRow { .. } => ElementKind::ListRow,
             Self::Status { .. } => ElementKind::Status,

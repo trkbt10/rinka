@@ -108,8 +108,10 @@ fn validate_node(element: &Element, path: &str) -> Result<(), TreeError> {
 
     let exact = match element.kind() {
         crate::ElementKind::Scroll => Some(1),
-        crate::ElementKind::Split => Some(2),
-        crate::ElementKind::Workspace => Some(3),
+        crate::ElementKind::Pattern => match element.props() {
+            crate::Props::Pattern { pattern } => Some(pattern.regions().len()),
+            _ => unreachable!("pattern kind must contain pattern properties"),
+        },
         crate::ElementKind::Label
         | crate::ElementKind::Button
         | crate::ElementKind::Input
@@ -161,17 +163,20 @@ fn validate_node(element: &Element, path: &str) -> Result<(), TreeError> {
 }
 
 fn validate_table_schema(element: &Element, path: &str) -> Result<(), TreeError> {
-    let crate::Props::List { style, columns, .. } = element.props() else {
+    let crate::Props::List {
+        pattern, columns, ..
+    } = element.props()
+    else {
         return Ok(());
     };
-    if *style != crate::ListStyle::Table {
+    if !pattern.presents_columns() {
         if !columns.is_empty() {
             return Err(TreeError::InvalidTableSchema {
                 path: path.to_owned(),
                 reason: "columns require table presentation".to_owned(),
             });
         }
-        return validate_non_table_rows(element.children(), path, *style);
+        return validate_non_table_rows(element.children(), path, *pattern);
     }
     let mut identifiers = HashSet::new();
     let mut active_sort_count = 0;
@@ -234,7 +239,7 @@ fn validate_table_rows(rows: &[Element], path: &str, expected: usize) -> Result<
 fn validate_non_table_rows(
     rows: &[Element],
     path: &str,
-    style: crate::ListStyle,
+    pattern: crate::CollectionPattern,
 ) -> Result<(), TreeError> {
     for (index, child) in rows.iter().enumerate() {
         let row_path = format!("{path}/{index}");
@@ -253,17 +258,18 @@ fn validate_non_table_rows(
                 reason: "secondary cells require table presentation".to_owned(),
             });
         }
-        if style != crate::ListStyle::Source {
+        if !pattern.supports_hierarchy() {
             if !child.children().is_empty() || *role != crate::ListRowRole::Item || *expanded {
                 return Err(TreeError::InvalidListSchema {
                     path: row_path,
-                    reason: "hierarchy, sections, and expansion require source presentation"
-                        .to_owned(),
+                    reason:
+                        "hierarchy, sections, and expansion require hierarchical collection pattern"
+                            .to_owned(),
                 });
             }
             continue;
         }
-        validate_non_table_rows(child.children(), &row_path, style)?;
+        validate_non_table_rows(child.children(), &row_path, pattern)?;
     }
     Ok(())
 }

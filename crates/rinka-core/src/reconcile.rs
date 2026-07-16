@@ -275,21 +275,25 @@ fn compatible(old: &Element, new: &Element) -> bool {
     match (old.props(), new.props()) {
         (
             crate::Props::List {
-                style: old_style, ..
+                pattern: old_pattern,
+                ..
             },
             crate::Props::List {
-                style: new_style, ..
+                pattern: new_pattern,
+                ..
             },
-        ) => list_native_class(*old_style) == list_native_class(*new_style),
+        ) => list_native_class(*old_pattern) == list_native_class(*new_pattern),
         _ => true,
     }
 }
 
-fn list_native_class(style: crate::ListStyle) -> u8 {
-    match style {
-        crate::ListStyle::Source => 0,
-        crate::ListStyle::Table => 1,
-        crate::ListStyle::Content | crate::ListStyle::Plain => 2,
+fn list_native_class(pattern: crate::CollectionPattern) -> u8 {
+    if pattern.supports_hierarchy() {
+        0
+    } else if pattern.presents_columns() {
+        1
+    } else {
+        2
     }
 }
 

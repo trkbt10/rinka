@@ -1,9 +1,9 @@
 //! Consumer-level reconciliation and runtime contracts.
 
 use rinka_core::{
-    AppRuntime, Component, Dispatch, Element, ListRowRole, ListStyle, Props, Renderer,
-    SortDirection, Spacing, TableColumn, TableSort, WindowContent, WindowRuntime, button, column,
-    label, list, list_row, workspace,
+    AppRuntime, CollectionPattern, Component, Dispatch, Element, ListRowRole, Props, Renderer,
+    SortDirection, Spacing, TableColumn, TableSort, UiPattern, WindowContent, WindowRuntime,
+    button, column, label, list, list_row, mount_pattern,
 };
 use rinka_headless::{HeadlessBackend, Operation};
 use std::cell::Cell;
@@ -193,7 +193,7 @@ fn invalid_table_schema_is_rejected_before_native_mutation() {
         TableColumn::new("name", "Name"),
         TableColumn::new("name", "Duplicate Name"),
     ])
-    .list_style(ListStyle::Table);
+    .collection_pattern(CollectionPattern::DataTable);
     let mut renderer = Renderer::new(HeadlessBackend::new());
 
     let error = renderer.render(invalid).unwrap_err();
@@ -211,7 +211,7 @@ fn secondary_cells_without_declared_table_columns_are_rejected() {
                 .table_cells(["Today"]),
         ],
     )
-    .list_style(ListStyle::Table);
+    .collection_pattern(CollectionPattern::DataTable);
     let mut renderer = Renderer::new(HeadlessBackend::new());
 
     let error = renderer.render(invalid).unwrap_err();
@@ -221,12 +221,12 @@ fn secondary_cells_without_declared_table_columns_are_rejected() {
 }
 
 #[test]
-fn secondary_cells_on_a_source_list_are_rejected() {
+fn secondary_cells_on_a_navigation_sidebar_are_rejected() {
     let invalid = list(
         "Locations",
         [list_row("Home", None, None, false, false, "Home", || {}).table_cells(["Today"])],
     )
-    .list_style(ListStyle::Source);
+    .collection_pattern(CollectionPattern::NavigationSidebar);
     let mut renderer = Renderer::new(HeadlessBackend::new());
 
     let error = renderer.render(invalid).unwrap_err();
@@ -236,30 +236,33 @@ fn secondary_cells_on_a_source_list_are_rejected() {
 }
 
 #[test]
-fn changing_between_source_and_table_replaces_the_native_container() {
+fn changing_between_navigation_sidebar_and_table_replaces_the_native_container() {
     let row = || list_row("Home", None, None, true, false, "Home", || {}).with_key("home");
     let mut renderer = Renderer::new(HeadlessBackend::new());
     renderer
         .render(
             list("Locations", [row()])
-                .list_style(ListStyle::Source)
+                .collection_pattern(CollectionPattern::NavigationSidebar)
                 .with_key("locations"),
         )
         .unwrap();
-    let source = renderer.backend().find_by_key("locations").unwrap();
+    let navigation_sidebar_handle = renderer.backend().find_by_key("locations").unwrap();
     renderer.backend_mut().clear_operations();
 
     let stats = renderer
         .render(
             list("Locations", [row()])
                 .table_columns([TableColumn::new("name", "Name")])
-                .list_style(ListStyle::Table)
+                .collection_pattern(CollectionPattern::DataTable)
                 .with_key("locations"),
         )
         .unwrap();
 
     assert_eq!(stats.replaced, 1);
-    assert_ne!(renderer.backend().find_by_key("locations"), Some(source));
+    assert_ne!(
+        renderer.backend().find_by_key("locations"),
+        Some(navigation_sidebar_handle)
+    );
 }
 
 #[test]
@@ -269,7 +272,7 @@ fn changing_between_table_and_non_outline_lists_replaces_the_native_container() 
     renderer
         .render(
             list("Files", [row()])
-                .list_style(ListStyle::Content)
+                .collection_pattern(CollectionPattern::ContentList)
                 .with_key("files"),
         )
         .unwrap();
@@ -279,7 +282,7 @@ fn changing_between_table_and_non_outline_lists_replaces_the_native_container() 
         .render(
             list("Files", [row()])
                 .table_columns([TableColumn::new("name", "Name")])
-                .list_style(ListStyle::Table)
+                .collection_pattern(CollectionPattern::DataTable)
                 .with_key("files"),
         )
         .unwrap();
@@ -290,7 +293,7 @@ fn changing_between_table_and_non_outline_lists_replaces_the_native_container() 
     let stats = renderer
         .render(
             list("Files", [row()])
-                .list_style(ListStyle::Plain)
+                .collection_pattern(CollectionPattern::EmbeddedList)
                 .with_key("files"),
         )
         .unwrap();
@@ -299,14 +302,14 @@ fn changing_between_table_and_non_outline_lists_replaces_the_native_container() 
 }
 
 #[test]
-fn source_sections_and_nested_rows_preserve_declarative_hierarchy() {
-    let source = list(
+fn section_headers_and_nested_rows_preserve_declarative_hierarchy() {
+    let navigation_sidebar = list(
         "Locations",
         [
             list_row("Favorites", None, None, false, false, "Favorites", || {})
-                .source_section()
+                .section_header()
                 .expanded(true)
-                .source_children([
+                .outline_children([
                     list_row("Home", None, None, true, false, "Home", || {}).with_key("home"),
                     list_row("Downloads", None, None, false, false, "Downloads", || {})
                         .with_key("downloads"),
@@ -314,11 +317,11 @@ fn source_sections_and_nested_rows_preserve_declarative_hierarchy() {
                 .with_key("favorites"),
         ],
     )
-    .list_style(ListStyle::Source)
+    .collection_pattern(CollectionPattern::NavigationSidebar)
     .with_key("locations");
     let mut renderer = Renderer::new(HeadlessBackend::new());
 
-    renderer.render(source).unwrap();
+    renderer.render(navigation_sidebar).unwrap();
 
     let section = renderer.backend().find_by_key("favorites").unwrap();
     let home = renderer.backend().find_by_key("home").unwrap();
@@ -338,20 +341,51 @@ fn source_sections_and_nested_rows_preserve_declarative_hierarchy() {
 }
 
 #[test]
-fn hierarchy_outside_source_presentation_is_rejected() {
+fn hierarchy_outside_hierarchical_collection_is_rejected() {
     let invalid = list(
         "Files",
         [
             list_row("Folder", None, None, false, false, "Folder", || {})
-                .source_children([list_row("Child", None, None, false, false, "Child", || {})]),
+                .outline_children([list_row("Child", None, None, false, false, "Child", || {})]),
         ],
     );
     let mut renderer = Renderer::new(HeadlessBackend::new());
 
     let error = renderer.render(invalid).unwrap_err();
 
-    assert!(error.to_string().contains("require source presentation"));
+    assert!(
+        error
+            .to_string()
+            .contains("require hierarchical collection pattern")
+    );
     assert!(renderer.backend().operations().is_empty());
+}
+
+#[test]
+fn outline_and_navigation_sidebar_share_native_hierarchy_identity() {
+    let tree = |pattern| {
+        list(
+            "Projects",
+            [list_row("Root", None, None, false, false, "Root", || {})
+                .outline_children([list_row("Child", None, None, false, false, "Child", || {})])
+                .with_key("root")],
+        )
+        .collection_pattern(pattern)
+        .with_key("projects")
+    };
+    let mut renderer = Renderer::new(HeadlessBackend::new());
+    renderer
+        .render(tree(CollectionPattern::NavigationSidebar))
+        .unwrap();
+    let before = renderer.backend().find_by_key("projects").unwrap();
+    renderer.backend_mut().clear_operations();
+
+    let stats = renderer.render(tree(CollectionPattern::Outline)).unwrap();
+
+    assert_eq!(renderer.backend().find_by_key("projects"), Some(before));
+    assert_eq!(stats.created, 0);
+    assert_eq!(stats.removed, 0);
+    assert_eq!(stats.patched, 1);
 }
 
 #[test]
@@ -367,7 +401,7 @@ fn multiple_active_sort_columns_are_rejected() {
         TableColumn::new("name", "Name").sorted(SortDirection::Ascending),
         TableColumn::new("modified", "Date Modified").sorted(SortDirection::Descending),
     ])
-    .list_style(ListStyle::Table);
+    .collection_pattern(CollectionPattern::DataTable);
     let mut renderer = Renderer::new(HeadlessBackend::new());
 
     let error = renderer.render(invalid).unwrap_err();
@@ -393,7 +427,7 @@ fn table_sort_handler_is_replaced_without_reconnecting_native_identity() {
             )],
         )
         .table_columns([TableColumn::new("name", "Name").sortable(true)])
-        .list_style(ListStyle::Table)
+        .collection_pattern(CollectionPattern::DataTable)
         .on_sort_change(move |sort| observed.borrow_mut().push(sort))
         .with_key("files")
     };
@@ -422,12 +456,16 @@ fn workspace_keeps_three_semantic_regions_and_patches_collapse_policy() {
     let mut renderer = Renderer::new(HeadlessBackend::new());
     renderer
         .render(
-            workspace(
-                true,
-                false,
-                label("Sidebar").with_key("sidebar"),
-                label("Content").with_key("content"),
-                label("Inspector").with_key("inspector"),
+            mount_pattern(
+                UiPattern::NavigationWorkspace {
+                    sidebar_collapsible: true,
+                    inspector_collapsible: false,
+                },
+                [
+                    label("Sidebar").with_key("sidebar"),
+                    label("Content").with_key("content"),
+                    label("Inspector").with_key("inspector"),
+                ],
             )
             .with_key("workspace"),
         )
@@ -445,12 +483,16 @@ fn workspace_keeps_three_semantic_regions_and_patches_collapse_policy() {
 
     let stats = renderer
         .render(
-            workspace(
-                false,
-                true,
-                label("Sidebar").with_key("sidebar"),
-                label("Content").with_key("content"),
-                label("Inspector").with_key("inspector"),
+            mount_pattern(
+                UiPattern::NavigationWorkspace {
+                    sidebar_collapsible: false,
+                    inspector_collapsible: true,
+                },
+                [
+                    label("Sidebar").with_key("sidebar"),
+                    label("Content").with_key("content"),
+                    label("Inspector").with_key("inspector"),
+                ],
             )
             .with_key("workspace"),
         )
@@ -460,9 +502,11 @@ fn workspace_keeps_three_semantic_regions_and_patches_collapse_policy() {
     assert_eq!(stats.created, 0);
     assert!(matches!(
         renderer.backend().props_of(workspace_handle),
-        Some(Props::Workspace {
-            sidebar_collapsible: false,
-            inspector_collapsible: true,
+        Some(Props::Pattern {
+            pattern: UiPattern::NavigationWorkspace {
+                sidebar_collapsible: false,
+                inspector_collapsible: true,
+            },
         })
     ));
 }
@@ -483,7 +527,7 @@ fn table_columns_and_row_cells_patch_without_replacing_native_identity() {
             TableColumn::new("modified", "Date Modified"),
             TableColumn::new("kind", "Kind"),
         ])
-        .list_style(ListStyle::Table)
+        .collection_pattern(CollectionPattern::DataTable)
         .with_key("files")
     };
     let mut renderer = Renderer::new(HeadlessBackend::new());

@@ -153,11 +153,11 @@ impl Element {
         self
     }
 
-    /// Sets a list's native presentation intent.
-    pub fn list_style(mut self, style: ListStyle) -> Self {
+    /// Sets a list's standard collection pattern.
+    pub fn collection_pattern(mut self, pattern: CollectionPattern) -> Self {
         match &mut self.props {
-            Props::List { style: value, .. } => *value = style,
-            _ => panic!("list_style is valid only for a list"),
+            Props::List { pattern: value, .. } => *value = pattern,
+            _ => panic!("collection_pattern is valid only for a list"),
         }
         self
     }
@@ -182,11 +182,11 @@ impl Element {
         self
     }
 
-    /// Marks a row as a native source-list section heading.
-    pub fn source_section(mut self) -> Self {
+    /// Marks a row as a section heading in a hierarchical collection.
+    pub fn section_header(mut self) -> Self {
         match &mut self.props {
             Props::ListRow { role, .. } => *role = ListRowRole::Section,
-            _ => panic!("source_section is valid only for a list row"),
+            _ => panic!("section_header is valid only for a list row"),
         }
         self
     }
@@ -200,8 +200,8 @@ impl Element {
         self
     }
 
-    /// Adds nested rows to a source-list item or section.
-    pub fn source_children(self, rows: impl IntoIterator<Item = Element>) -> Self {
+    /// Adds nested rows to a hierarchical collection item or section.
+    pub fn outline_children(self, rows: impl IntoIterator<Item = Element>) -> Self {
         self.list_children(rows)
     }
 
@@ -405,26 +405,12 @@ pub fn scroll(axis: Axis, child: Element) -> Element {
     Element::parent(Props::Scroll { axis }, [child])
 }
 
-/// Creates a native two-pane container with exactly two children.
-pub fn split(role: SplitRole, collapsible: bool, first: Element, second: Element) -> Element {
-    Element::parent(Props::Split { role, collapsible }, [first, second])
-}
-
-/// Creates one native navigation workspace with sidebar, content, and inspector.
-pub fn workspace(
-    sidebar_collapsible: bool,
-    inspector_collapsible: bool,
-    sidebar: Element,
-    content: Element,
-    inspector: Element,
+/// Mounts a standard desktop UI pattern with children in its declared region order.
+pub fn mount_pattern(
+    pattern: crate::UiPattern,
+    regions: impl IntoIterator<Item = Element>,
 ) -> Element {
-    Element::parent(
-        Props::Workspace {
-            sidebar_collapsible,
-            inspector_collapsible,
-        },
-        [sidebar, content, inspector],
-    )
+    Element::parent(Props::Pattern { pattern }, regions)
 }
 
 /// Creates a native list.
@@ -435,7 +421,7 @@ pub fn list(
     Element::parent(
         Props::List {
             accessibility_label: accessibility_label.into(),
-            style: ListStyle::Content,
+            pattern: CollectionPattern::ContentList,
             columns: Vec::new(),
         },
         rows,

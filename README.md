@@ -33,25 +33,34 @@ ownership, visual constraints, and verification requirements.
 
 ## Native workspace contract
 
-`workspace` expresses one navigation sidebar, one primary content region, and
-one inspector. It is not implemented as two nested generic splits. On macOS it
-is owned by one `NSSplitViewController`; on GTK it maps to the platform's
-navigation and utility split surfaces; on Windows it maps to an adaptive
-WinUI NavigationView with a native inspector region. Collapse policy is
+`UiPattern` is the shared vocabulary for standard desktop compositions. A
+consumer mounts semantic regions in the order declared by the pattern; it does
+not choose an operating-system widget. `NavigationSplit` mounts a navigation
+sidebar and content, `UtilitySplit` mounts content and an inspector, and
+`NavigationWorkspace` mounts all three regions.
+
+| Shared pattern | AppKit route | GTK/libadwaita route | WinUI route |
+| --- | --- | --- | --- |
+| `NavigationSplit` | `NSSplitViewController` sidebar item | adaptive split surface | navigation layout |
+| `UtilitySplit` | `NSSplitViewController` inspector item | `AdwOverlaySplitView` utility pane | content/inspector grid |
+| `NavigationWorkspace` | one three-item `NSSplitViewController` | nested navigation and utility split surfaces | adaptive `NavigationView` with inspector |
+
+Win32 uses standard tree/list controls inside the same pattern contract when
+the legacy toolkit has no equivalent high-level container. Collapse policy is
 declarative, while pane thickness, safe areas, dividers, transitions, and
-system materials remain owned by the native toolkit.
+system materials remain owned by each native toolkit.
 
 On macOS a workspace window receives the standard Sidebar and Inspector toolbar
 items and the corresponding tracking separators. Applications add only their
 own actions:
 
 ```rust
-let content = workspace(
-    true,
-    true,
-    sidebar,
-    directory,
-    inspector,
+let content = mount_pattern(
+    UiPattern::NavigationWorkspace {
+        sidebar_collapsible: true,
+        inspector_collapsible: true,
+    },
+    [sidebar, directory, inspector],
 );
 ```
 
@@ -77,16 +86,18 @@ Event callbacks must emit a component message instead of maintaining a second
 adapter-side model. This keeps visible content, native selection, accessibility
 state, and inspectors derived from the same state transition.
 
-## Native source lists and tables
+## Native collection patterns
 
-`ListStyle::Source` requests navigation semantics. The AppKit adapter creates
-an `NSOutlineView`, and the GTK adapter applies its navigation-sidebar
-semantics. `source_section`, `source_children`, `expanded`, and
-`on_expansion_change` declare native sections and hierarchy. A terminal source
-row should not request a disclosure indicator.
+`CollectionPattern::NavigationSidebar` requests navigation placement and
+selection semantics. `CollectionPattern::Outline` requests hierarchical
+content without sidebar treatment. Both route to the toolkit's native tree or
+outline control. `section_header`, `outline_children`, `expanded`, and
+`on_expansion_change` declare sections and hierarchy. A terminal row should not
+request a disclosure indicator.
 
-`ListStyle::Table` accepts a stable schema. The primary row title belongs to
-the first column; `table_cells` supplies values for the remaining columns:
+`CollectionPattern::DataTable` accepts a stable schema. The primary row title
+belongs to the first column; `table_cells` supplies values for the remaining
+columns:
 
 ```rust
 let files = list(
@@ -110,7 +121,7 @@ let files = list(
     TableColumn::new("size", "Size").sortable(true),
     TableColumn::new("kind", "Kind").sortable(true),
 ])
-.list_style(ListStyle::Table)
+.collection_pattern(CollectionPattern::DataTable)
 .on_sort_change(|sort| dispatch.emit(Message::SetSort(sort)));
 ```
 

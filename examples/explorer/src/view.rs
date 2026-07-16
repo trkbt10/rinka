@@ -1,12 +1,12 @@
 //! Deterministic consumer scenes shared by both native hosts.
 
 use rinka::{
-    Align, ApplicationSpec, Axis, ButtonRole, Component, ControlSize, Dispatch, Element, Justify,
-    ListStyle, PanelBehavior, Size, SortDirection, Spacing, StatusTone, Symbol, TableColumn,
+    Align, ApplicationSpec, Axis, ButtonRole, CollectionPattern, Component, ControlSize, Dispatch,
+    Element, Justify, PanelBehavior, Size, SortDirection, Spacing, StatusTone, Symbol, TableColumn,
     TableSort, TextRole, ToolbarAction, ToolbarChoice, ToolbarDisplay, ToolbarGroupDisplay,
-    ToolbarItem, ToolbarMenuEntry, ToolbarPlacement, WindowContent, WindowId, WindowKind,
-    WindowSpec, button, column, label, list, list_row, progress, row, separator, spacer, status,
-    toggle, workspace,
+    ToolbarItem, ToolbarMenuEntry, ToolbarPlacement, UiPattern, WindowContent, WindowId,
+    WindowKind, WindowSpec, button, column, label, list, list_row, mount_pattern, progress, row,
+    separator, spacer, status, toggle,
 };
 
 /// Meaningful UI state used by the consumer verification matrix.
@@ -340,12 +340,16 @@ fn main_window(scene: Scene) -> WindowSpec {
 }
 
 fn explorer_content(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) -> Element {
-    workspace(
-        true,
-        true,
-        sidebar(model, dispatch.clone()),
-        directory_content(model, dispatch),
-        inspector(model),
+    mount_pattern(
+        UiPattern::NavigationWorkspace {
+            sidebar_collapsible: true,
+            inspector_collapsible: true,
+        },
+        [
+            sidebar(model, dispatch.clone()),
+            directory_content(model, dispatch),
+            inspector(model),
+        ],
     )
     .with_key("explorer-workspace")
 }
@@ -366,13 +370,13 @@ fn sidebar(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) -> El
                     "Favorites",
                     announce("section-favorites"),
                 )
-                .source_section()
+                .section_header()
                 .expanded(model.favorites_expanded)
                 .on_expansion_change(move |expanded| {
                     favorites_dispatch
                         .emit(ExplorerMessage::SetSectionExpanded("favorites", expanded));
                 })
-                .source_children([
+                .outline_children([
                     location_row(Location::Home, Symbol::Home, model, dispatch.clone()),
                     location_row(Location::Documents, Symbol::Folder, model, dispatch.clone()),
                     location_row(Location::Downloads, Symbol::Folder, model, dispatch.clone()),
@@ -387,13 +391,13 @@ fn sidebar(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) -> El
                     "Locations",
                     announce("section-locations"),
                 )
-                .source_section()
+                .section_header()
                 .expanded(model.locations_expanded)
                 .on_expansion_change(move |expanded| {
                     locations_dispatch
                         .emit(ExplorerMessage::SetSectionExpanded("locations", expanded));
                 })
-                .source_children([location_row(
+                .outline_children([location_row(
                     Location::RemoteProject,
                     Symbol::Folder,
                     model,
@@ -402,7 +406,7 @@ fn sidebar(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) -> El
                 .with_key("section-locations"),
             ],
         )
-        .list_style(ListStyle::Source)
+        .collection_pattern(CollectionPattern::NavigationSidebar)
         .with_key("locations-list"),
         column([
             separator(Axis::Horizontal).with_key("sidebar-separator"),
@@ -561,7 +565,7 @@ fn file_list(model: &ExplorerComponent, dispatch: Dispatch<ExplorerMessage>) -> 
             column("size", "Size"),
             column("kind", "Kind"),
         ])
-        .list_style(ListStyle::Table)
+        .collection_pattern(CollectionPattern::DataTable)
         .on_sort_change(move |sort| dispatch.emit(ExplorerMessage::SetSort(sort)))
         .with_key("file-list")
 }
