@@ -1,6 +1,7 @@
 //! Immutable declarative element descriptions and semantic roles.
 
 use crate::accelerator::Accelerator;
+use crate::drag::{DragPayload, DropTarget, FileDrop, FilePromise, PayloadDrop};
 use crate::event::{EventHandlers, InputHandler, SelectionChangeHandler, TextChangeHandler};
 use crate::menu::{ContextMenu, MenuEntry};
 use crate::semantics::*;
@@ -379,6 +380,91 @@ impl Element {
     /// Returns the attached declarative context menu model.
     pub fn context_menu_model(&self) -> Option<&ContextMenu> {
         self.handlers.context_menu.as_ref()
+    }
+
+    /// Accepts operating-system file drops on this element.
+    ///
+    /// The handler receives the dropped file paths and the drop position in
+    /// this element's local coordinates. Valid on layout containers, native
+    /// lists, and canvases — the surfaces whose platform realizations serve
+    /// a drop region.
+    pub fn on_file_drop(mut self, handler: impl Fn(FileDrop) + 'static) -> Self {
+        match self.kind() {
+            ElementKind::Stack | ElementKind::List | ElementKind::Canvas => {
+                self.handlers.file_drop = Some(Rc::new(handler));
+                self.handlers
+                    .drop_target
+                    .get_or_insert_with(DropTarget::default)
+                    .accept_files();
+            }
+            _ => panic!("on_file_drop is valid only for a stack, list, or canvas"),
+        }
+        self
+    }
+
+    /// Makes this list row draggable out of the application as a promised
+    /// file.
+    ///
+    /// The promise's write callback materializes the content lazily, only
+    /// when the destination accepts the drop. A row may declare a file
+    /// promise and a typed payload together: one native drag session then
+    /// carries both representations, and the destination consumes the flavor
+    /// it understands.
+    pub fn draggable_file(mut self, promise: FilePromise) -> Self {
+        match self.kind() {
+            ElementKind::ListRow => self.handlers.file_promise = Some(promise),
+            _ => panic!("draggable_file is valid only for a list row"),
+        }
+        self
+    }
+
+    /// Makes this list row draggable within the application with a typed
+    /// payload.
+    pub fn drag_payload(mut self, payload: DragPayload) -> Self {
+        match self.kind() {
+            ElementKind::ListRow => self.handlers.drag_payload = Some(payload),
+            _ => panic!("drag_payload is valid only for a list row"),
+        }
+        self
+    }
+
+    /// Accepts typed intra-application payload drops on this element.
+    ///
+    /// `types` lists the accepted payload type identifiers; the handler
+    /// receives the payload plus the drop position in this element's local
+    /// coordinates. Valid on layout containers, native lists, list rows, and
+    /// canvases.
+    pub fn on_drop_accepting(
+        mut self,
+        types: impl IntoIterator<Item = impl Into<String>>,
+        handler: impl Fn(PayloadDrop) + 'static,
+    ) -> Self {
+        match self.kind() {
+            ElementKind::Stack | ElementKind::List | ElementKind::ListRow | ElementKind::Canvas => {
+                self.handlers.payload_drop = Some(Rc::new(handler));
+                self.handlers
+                    .drop_target
+                    .get_or_insert_with(DropTarget::default)
+                    .accept_payload_types(types.into_iter().map(Into::into));
+            }
+            _ => panic!("on_drop_accepting is valid only for a stack, list, list row, or canvas"),
+        }
+        self
+    }
+
+    /// Returns the attached declarative file-promise drag-source model.
+    pub fn file_promise_model(&self) -> Option<&FilePromise> {
+        self.handlers.file_promise.as_ref()
+    }
+
+    /// Returns the attached declarative typed-payload drag-source model.
+    pub fn drag_payload_model(&self) -> Option<&DragPayload> {
+        self.handlers.drag_payload.as_ref()
+    }
+
+    /// Returns the attached declarative drop-target model.
+    pub fn drop_target_model(&self) -> Option<&DropTarget> {
+        self.handlers.drop_target.as_ref()
     }
 
     pub(crate) fn take_children(&mut self) -> Vec<Self> {

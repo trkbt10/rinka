@@ -1,30 +1,41 @@
 //! Native host mutation contract and property snapshots.
 
+use crate::drag::{DragPayload, DropTarget, FilePromise};
 use crate::menu::ContextMenu;
 use crate::{Element, Props};
 use std::fmt;
 
 /// Complete next semantic snapshot for an existing native object.
 ///
-/// The patch carries the full next [`Props`] and the full next context-menu
-/// model instead of duplicating every property variant in a mutation
-/// hierarchy. Menu comparison uses the model's declarative equality, which
-/// intentionally ignores activation handlers: handlers reach the adapter
-/// through the stable event binding on every render regardless of patching.
+/// The patch carries the full next [`Props`], the full next context-menu
+/// model, and the full next drag-and-drop models instead of duplicating
+/// every property variant in a mutation hierarchy. Model comparison uses
+/// declarative equality, which intentionally ignores callbacks: handlers
+/// reach the adapter through the stable event binding on every render
+/// regardless of patching.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PropertyPatch {
     next: Props,
     next_context_menu: Option<ContextMenu>,
+    next_file_promise: Option<FilePromise>,
+    next_drag_payload: Option<DragPayload>,
+    next_drop_target: Option<DropTarget>,
 }
 
 impl PropertyPatch {
     pub(crate) fn between(old: &Element, new: &Element) -> Option<Self> {
-        (old.props() != new.props() || old.context_menu_model() != new.context_menu_model()).then(
-            || Self {
-                next: new.props().clone(),
-                next_context_menu: new.context_menu_model().cloned(),
-            },
-        )
+        (old.props() != new.props()
+            || old.context_menu_model() != new.context_menu_model()
+            || old.file_promise_model() != new.file_promise_model()
+            || old.drag_payload_model() != new.drag_payload_model()
+            || old.drop_target_model() != new.drop_target_model())
+        .then(|| Self {
+            next: new.props().clone(),
+            next_context_menu: new.context_menu_model().cloned(),
+            next_file_promise: new.file_promise_model().cloned(),
+            next_drag_payload: new.drag_payload_model().cloned(),
+            next_drop_target: new.drop_target_model().cloned(),
+        })
     }
 
     /// Returns the complete semantic state requested by this update.
@@ -37,6 +48,28 @@ impl PropertyPatch {
     /// `None` means the element carries no context menu after this update.
     pub fn context_menu(&self) -> Option<&ContextMenu> {
         self.next_context_menu.as_ref()
+    }
+
+    /// Returns the complete file-promise drag-source model requested by
+    /// this update.
+    ///
+    /// `None` means the element is no file-promise drag source after this
+    /// update.
+    pub fn file_promise(&self) -> Option<&FilePromise> {
+        self.next_file_promise.as_ref()
+    }
+
+    /// Returns the complete typed-payload drag-source model requested by
+    /// this update.
+    pub fn drag_payload(&self) -> Option<&DragPayload> {
+        self.next_drag_payload.as_ref()
+    }
+
+    /// Returns the complete drop-target model requested by this update.
+    ///
+    /// `None` means the element accepts no drops after this update.
+    pub fn drop_target(&self) -> Option<&DropTarget> {
+        self.next_drop_target.as_ref()
     }
 }
 

@@ -1,5 +1,6 @@
 //! Stable event slots shared by the reconciler and native adapters.
 
+use crate::drag::{DragPayload, DropTarget, FileDrop, FilePromise, PayloadDrop};
 use crate::menu::ContextMenu;
 use crate::{PointerEvent, TableSort, TextChange, TextSelection};
 use std::cell::RefCell;
@@ -20,6 +21,10 @@ pub type PointerHandler = Rc<dyn Fn(PointerEvent)>;
 pub type TextChangeHandler = Rc<dyn Fn(TextChange)>;
 /// Callback used by multi-line text areas for native selection changes.
 pub type SelectionChangeHandler = Rc<dyn Fn(TextSelection)>;
+/// Callback used by elements accepting operating-system file drops.
+pub type FileDropHandler = Rc<dyn Fn(FileDrop)>;
+/// Callback used by elements accepting typed intra-application payloads.
+pub type PayloadDropHandler = Rc<dyn Fn(PayloadDrop)>;
 
 /// Event handlers associated with one declarative element.
 #[derive(Clone, Default)]
@@ -34,6 +39,13 @@ pub struct EventHandlers {
     pub(crate) context_menu: Option<ContextMenu>,
     pub(crate) text_change: Option<TextChangeHandler>,
     pub(crate) selection_change: Option<SelectionChangeHandler>,
+    pub(crate) file_drop: Option<FileDropHandler>,
+    pub(crate) payload_drop: Option<PayloadDropHandler>,
+    /// The file-promise model rides with the handlers because its write
+    /// callback must stay current across renders, like menu activations.
+    pub(crate) file_promise: Option<FilePromise>,
+    pub(crate) drag_payload: Option<DragPayload>,
+    pub(crate) drop_target: Option<DropTarget>,
 }
 
 impl fmt::Debug for EventHandlers {
@@ -48,6 +60,11 @@ impl fmt::Debug for EventHandlers {
             .field("context_menu", &self.context_menu.is_some())
             .field("text_change", &self.text_change.is_some())
             .field("selection_change", &self.selection_change.is_some())
+            .field("file_drop", &self.file_drop.is_some())
+            .field("payload_drop", &self.payload_drop.is_some())
+            .field("file_promise", &self.file_promise.is_some())
+            .field("drag_payload", &self.drag_payload.is_some())
+            .field("drop_target", &self.drop_target.is_some())
             .finish()
     }
 }
@@ -62,6 +79,31 @@ struct EventSlots {
     context_menu: Option<ContextMenu>,
     text_change: Option<TextChangeHandler>,
     selection_change: Option<SelectionChangeHandler>,
+    file_drop: Option<FileDropHandler>,
+    payload_drop: Option<PayloadDropHandler>,
+    file_promise: Option<FilePromise>,
+    drag_payload: Option<DragPayload>,
+    drop_target: Option<DropTarget>,
+}
+
+impl EventSlots {
+    fn from_handlers(handlers: &EventHandlers) -> Self {
+        Self {
+            activate: handlers.activate.clone(),
+            input: handlers.input.clone(),
+            toggle: handlers.toggle.clone(),
+            sort: handlers.sort.clone(),
+            pointer: handlers.pointer.clone(),
+            context_menu: handlers.context_menu.clone(),
+            text_change: handlers.text_change.clone(),
+            selection_change: handlers.selection_change.clone(),
+            file_drop: handlers.file_drop.clone(),
+            payload_drop: handlers.payload_drop.clone(),
+            file_promise: handlers.file_promise.clone(),
+            drag_payload: handlers.drag_payload.clone(),
+            drop_target: handlers.drop_target.clone(),
+        }
+    }
 }
 
 /// Stable native signal target whose handlers can be replaced after a render.
@@ -74,16 +116,7 @@ pub struct EventBindings(Rc<RefCell<EventSlots>>);
 impl EventBindings {
     /// Creates bindings from one element's handlers.
     pub fn new(handlers: &EventHandlers) -> Self {
-        Self(Rc::new(RefCell::new(EventSlots {
-            activate: handlers.activate.clone(),
-            input: handlers.input.clone(),
-            toggle: handlers.toggle.clone(),
-            sort: handlers.sort.clone(),
-            pointer: handlers.pointer.clone(),
-            context_menu: handlers.context_menu.clone(),
-            text_change: handlers.text_change.clone(),
-            selection_change: handlers.selection_change.clone(),
-        })))
+        Self(Rc::new(RefCell::new(EventSlots::from_handlers(handlers))))
     }
 
     /// Creates an activation-only binding for window or toolbar hosts.
@@ -114,6 +147,11 @@ impl EventBindings {
         slots
             .selection_change
             .clone_from(&handlers.selection_change);
+        slots.file_drop.clone_from(&handlers.file_drop);
+        slots.payload_drop.clone_from(&handlers.payload_drop);
+        slots.file_promise.clone_from(&handlers.file_promise);
+        slots.drag_payload.clone_from(&handlers.drag_payload);
+        slots.drop_target.clone_from(&handlers.drop_target);
     }
 
     /// Emits an activation event through the current handler.
@@ -192,6 +230,76 @@ impl EventBindings {
             handler(value);
         }
     }
+    /// Delivers dropped operating-system files through the current handler
+    /// and returns whether the drop was consumed.
+    ///
+    /// An element whose current drop-target model does not accept files
+    /// refuses the drop, matching the native adapters' refusal during the
+    /// drag session's validation phase.
+    pub fn emit_file_drop(&self, value: FileDrop) -> bool {
+        let handler = {
+            let slots = self.0.borrow();
+            if !slots
+                .drop_target
+                .as_ref()
+                .is_some_and(DropTarget::accepts_files)
+            {
+                return false;
+            }
+            slots.file_drop.clone()
+        };
+        if let Some(handler) = handler {
+            handler(value);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Delivers a typed intra-application payload through the current
+    /// handler and returns whether the drop was consumed.
+    ///
+    /// A payload whose type the current drop-target model does not accept is
+    /// refused: a drop the native session's validation phase would reject
+    /// must not fire through the semantic model either.
+    pub fn emit_payload_drop(&self, value: PayloadDrop) -> bool {
+        let handler = {
+            let slots = self.0.borrow();
+            if !slots
+                .drop_target
+                .as_ref()
+                .is_some_and(|target| target.accepts_payload_type(value.payload.payload_type()))
+            {
+                return false;
+            }
+            slots.payload_drop.clone()
+        };
+        if let Some(handler) = handler {
+            handler(value);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Returns the current file-promise drag-source model.
+    ///
+    /// Adapters read this at drag-session start and at promise
+    /// materialization time, so the write callback is always the one from
+    /// the latest render.
+    pub fn file_promise(&self) -> Option<FilePromise> {
+        self.0.borrow().file_promise.clone()
+    }
+
+    /// Returns the current typed-payload drag-source model.
+    pub fn drag_payload(&self) -> Option<DragPayload> {
+        self.0.borrow().drag_payload.clone()
+    }
+
+    /// Returns the current drop-target model.
+    pub fn drop_target(&self) -> Option<DropTarget> {
+        self.0.borrow().drop_target.clone()
+    }
 }
 
 impl fmt::Debug for EventBindings {
@@ -207,6 +315,11 @@ impl fmt::Debug for EventBindings {
             .field("context_menu", &slots.context_menu.is_some())
             .field("text_change", &slots.text_change.is_some())
             .field("selection_change", &slots.selection_change.is_some())
+            .field("file_drop", &slots.file_drop.is_some())
+            .field("payload_drop", &slots.payload_drop.is_some())
+            .field("file_promise", &slots.file_promise.is_some())
+            .field("drag_payload", &slots.drag_payload.is_some())
+            .field("drop_target", &slots.drop_target.is_some())
             .finish()
     }
 }

@@ -9,6 +9,7 @@ mod canvas;
 mod chord;
 mod clipboard;
 mod dialog;
+mod drag;
 mod element;
 mod event;
 mod menu;
@@ -41,13 +42,16 @@ pub use dialog::{
     DialogOutcome, DialogRequest, DialogResponder, DialogService, Dialogs, OpenPanelDescription,
     SavePanelDescription,
 };
+pub use drag::{
+    DragPayload, DropPosition, DropTarget, FileDrop, FilePromise, FilePromiseWriter, PayloadDrop,
+};
 pub use element::{
     Element, Key, button, canvas, column, image, input, label, list, list_row, mount_pattern,
     progress, row, scroll, separator, spacer, status, text_area, toggle,
 };
 pub use event::{
-    ActivateHandler, EventBindings, InputHandler, PointerHandler, SelectionChangeHandler,
-    SortHandler, TextChangeHandler, ToggleHandler,
+    ActivateHandler, EventBindings, FileDropHandler, InputHandler, PayloadDropHandler,
+    PointerHandler, SelectionChangeHandler, SortHandler, TextChangeHandler, ToggleHandler,
 };
 pub use menu::{ContextMenu, MenuEntry, MenuItem, MenuItemRole, Submenu};
 pub use pattern::{PatternRegion, UiPattern};

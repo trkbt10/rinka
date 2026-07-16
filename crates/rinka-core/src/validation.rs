@@ -96,6 +96,13 @@ pub enum TreeError {
         /// Human-readable invariant violation.
         reason: String,
     },
+    /// A drag-and-drop declaration violated a structural invariant.
+    InvalidDragDeclaration {
+        /// Element path used for diagnostics.
+        path: String,
+        /// Human-readable invariant violation.
+        reason: String,
+    },
 }
 
 impl fmt::Display for TreeError {
@@ -144,6 +151,9 @@ impl fmt::Display for TreeError {
             ),
             Self::InvalidAcceleratorTable { path, reason } => {
                 write!(formatter, "invalid accelerator table at {path}: {reason}")
+            }
+            Self::InvalidDragDeclaration { path, reason } => {
+                write!(formatter, "invalid drag declaration at {path}: {reason}")
             }
         }
     }
@@ -208,6 +218,8 @@ fn validate_node(element: &Element, path: &str) -> Result<(), TreeError> {
             reason,
         });
     }
+
+    validate_drag_declarations(element, path)?;
 
     let children = element.children();
     let mut keys = HashSet::new();
@@ -352,6 +364,72 @@ fn validate_text_area(element: &Element, path: &str) -> Result<(), TreeError> {
             "selection {}..{} exceeds the {length}-character document",
             selection.anchor, selection.head
         )));
+    }
+    Ok(())
+}
+
+/// Rejects drag-and-drop declarations whose descriptive data cannot reach a
+/// native session: a promise without a legal bare file name or content type,
+/// a payload without a transportable type and identity, and a drop target
+/// whose accepted type list is empty or ambiguous.
+fn validate_drag_declarations(element: &Element, path: &str) -> Result<(), TreeError> {
+    let invalid = |reason: String| TreeError::InvalidDragDeclaration {
+        path: path.to_owned(),
+        reason,
+    };
+    if let Some(promise) = element.file_promise_model() {
+        if promise.file_name().is_empty() {
+            return Err(invalid("promised file name is empty".to_owned()));
+        }
+        if promise.file_name().contains(['/', '\\'])
+            || promise.file_name() == "."
+            || promise.file_name() == ".."
+        {
+            return Err(invalid(format!(
+                "promised file name '{}' must be a bare file name",
+                promise.file_name()
+            )));
+        }
+        if promise.content_type().is_empty() {
+            return Err(invalid("promised content type is empty".to_owned()));
+        }
+    }
+    if let Some(payload) = element.drag_payload_model() {
+        if payload.payload_type().is_empty() {
+            return Err(invalid("drag payload type is empty".to_owned()));
+        }
+        if payload.payload_type().contains('\n') {
+            // The payload type frames the pasteboard transport encoding;
+            // the identity after it may contain any text.
+            return Err(invalid(format!(
+                "drag payload type '{}' must not contain a line break",
+                payload.payload_type()
+            )));
+        }
+        if payload.id().is_empty() {
+            return Err(invalid(format!(
+                "drag payload of type '{}' has an empty id",
+                payload.payload_type()
+            )));
+        }
+    }
+    if let Some(target) = element.drop_target_model() {
+        let mut accepted = HashSet::new();
+        for payload_type in target.payload_types() {
+            if payload_type.is_empty() {
+                return Err(invalid("accepted payload type is empty".to_owned()));
+            }
+            if !accepted.insert(payload_type.as_str()) {
+                return Err(invalid(format!(
+                    "accepted payload type '{payload_type}' is duplicated"
+                )));
+            }
+        }
+        if !target.accepts_files() && target.payload_types().is_empty() {
+            return Err(invalid(
+                "drop target accepts neither files nor any payload type".to_owned(),
+            ));
+        }
     }
     Ok(())
 }
