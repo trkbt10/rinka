@@ -1,0 +1,19 @@
+[package]
+name = "rinka-test"
+description = "Consumer test harness for Rinka: mount the real adapter in-process, find by accessibility label, act, settle deterministically, capture pixels"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rinka-core = { path = "../rinka-core" }
+rinka-headless = { path = "../rinka-headless" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+rinka-macos = { path = "../rinka-macos" }
+
+[lints]
+workspace = true

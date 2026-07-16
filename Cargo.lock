@@ -634,6 +634,7 @@ dependencies = [
  "rinka-gtk",
  "rinka-headless",
  "rinka-macos",
+ "rinka-test",
  "rinka-windows",
  "rinka-winui",
  "windows-reactor-setup",
@@ -663,6 +664,15 @@ dependencies = [
  "objc2",
  "objc2-foundation",
  "rinka-core",
+]
+
+[[package]]
+name = "rinka-test"
+version = "0.1.0"
+dependencies = [
+ "rinka-core",
+ "rinka-headless",
+ "rinka-macos",
 ]
 
 [[package]]

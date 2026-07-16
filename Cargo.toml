@@ -4,6 +4,7 @@ members = [
     "crates/rinka",
     "crates/rinka-core",
     "crates/rinka-headless",
+    "crates/rinka-test",
     "crates/rinka-macos",
     "crates/rinka-gtk",
     "crates/rinka-windows",
@@ -15,6 +16,7 @@ default-members = [
     "crates/rinka",
     "crates/rinka-core",
     "crates/rinka-headless",
+    "crates/rinka-test",
     "examples/explorer",
 ]
 [workspace.package]
