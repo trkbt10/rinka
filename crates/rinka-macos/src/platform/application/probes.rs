@@ -379,6 +379,7 @@ define_class!(
             self.begin_drag_drop_probe();
             self.begin_text_input_probe();
             self.begin_menu_bar_probe();
+            self.begin_dock_probe();
         }
 
         #[unsafe(method(runTransitionProbe:))]
