@@ -52,13 +52,11 @@ macos-text-input-probe:
 macos-menu-bar-probe:
 	@scripts/appkit-menu-bar-probe.sh
 
-<<<<<<< HEAD
 macos-dock-probe:
 	@scripts/appkit-dock-probe.sh
-=======
+
 macos-window-lifecycle-probe:
 	@scripts/appkit-window-lifecycle-probe.sh
->>>>>>> b873b92 (feat: open, retitle, and veto-close explorer windows at runtime)
 
 macos-scene-matrix:
 	@scripts/appkit-scene-matrix.sh
