@@ -405,11 +405,12 @@ impl ApplicationDelegate {
                     "Rinka menu-bar probe finish=close mechanism={} dispatching=true",
                     native_dispatch_mechanism()
                 );
-                let close = unsafe {
-                    let windows = self.ivars().windows.borrow();
-                    let window = windows.first();
-                    dispatch_native_menu_item("File", "Close Window", window)
-                };
+                // The retained window is cloned out so no registry borrow is
+                // held while the close dispatches: performClose: unhosts the
+                // window synchronously, which mutates these registries.
+                let window = self.ivars().windows.borrow().first().cloned();
+                let close =
+                    unsafe { dispatch_native_menu_item("File", "Close Window", window.as_ref()) };
                 eprintln!("Rinka menu-bar probe finish=close not_performed={}", !close);
                 if close {
                     return;

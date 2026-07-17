@@ -165,7 +165,22 @@ impl ApplicationDelegate {
         if attempts < WINDOW_LIFECYCLE_PROBE_MAX_TURNS {
             self.schedule_window_lifecycle_probe();
         } else {
-            self.fail_window_lifecycle_probe(step, "settlement_timeout");
+            // The mounted action note distinguishes "the message never
+            // dispatched" from "the service call failed silently".
+            let note = {
+                let renderers = self.ivars().renderers.borrow();
+                renderers.first().and_then(|runtime| {
+                    runtime.with_renderer(|renderer| {
+                        renderer
+                            .mounted()
+                            .and_then(|root| mounted_label_text(root, "file-action-note"))
+                    })
+                })
+            };
+            self.fail_window_lifecycle_probe(
+                step,
+                &format!("settlement_timeout file_action_note={note:?}"),
+            );
         }
     }
 

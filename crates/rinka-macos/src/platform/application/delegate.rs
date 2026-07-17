@@ -1438,12 +1438,15 @@ impl ApplicationDelegate {
                 Some(false) => self.finish_accelerator_probe(),
                 Some(true) => {
                     let menu = self.probe_menu_key_equivalent();
-                    let expected_mask = NS_EVENT_MODIFIER_COMMAND | NS_EVENT_MODIFIER_SHIFT;
+                    // AppKit's letter convention: Shift rides in the
+                    // uppercase key equivalent, never in the mask (see
+                    // apply_menu_item_chord).
+                    let expected_mask = NS_EVENT_MODIFIER_COMMAND;
                     let menu_passed = menu
                         .as_ref()
-                        .is_some_and(|(text, mask)| text == "n" && *mask == expected_mask);
+                        .is_some_and(|(text, mask)| text == "N" && *mask == expected_mask);
                     eprintln!(
-                        "Rinka accelerator probe step=menu_key_equivalent observed={menu:?} expected=(\"n\", {expected_mask}) pass={menu_passed}"
+                        "Rinka accelerator probe step=menu_key_equivalent observed={menu:?} expected=(\"N\", {expected_mask}) pass={menu_passed}"
                     );
                     if !menu_passed
                         && let Some(probe) = self.ivars().accelerator_probe.borrow_mut().as_mut()

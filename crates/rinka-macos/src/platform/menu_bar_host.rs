@@ -130,7 +130,17 @@ impl MenuBarHost {
     /// Dispatches one app-defined item activation to the focused window.
     fn activate(&self, item_id: &str) {
         let key_window = self.key_window_id();
-        let outcome = self.0.router.borrow().activate(key_window.as_ref(), item_id);
+        // Resolution and invocation are split so the router borrow is
+        // released before the handler runs: a handler may open or close
+        // windows, which registers and unregisters bars on this router.
+        let (outcome, handler) = self
+            .0
+            .router
+            .borrow()
+            .resolve_activation(key_window.as_ref(), item_id);
+        if let Some(handler) = handler {
+            handler();
+        }
         if self.0.log_activations {
             let outcome_text = match &outcome {
                 MenuBarActivation::Dispatched { owner: Some(owner) } => {

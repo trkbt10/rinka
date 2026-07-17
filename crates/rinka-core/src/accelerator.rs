@@ -289,9 +289,29 @@ impl AcceleratorRouter {
     /// Routes one chord, invoking the matched entry's action before returning.
     ///
     /// The action runs after every internal borrow is released, so it may
-    /// re-render and replace table entries. It must not register or
-    /// unregister windows on this router.
+    /// re-render and replace table entries. An action that must register or
+    /// unregister windows on this very router (opening or closing a window)
+    /// needs the caller to hold no outer borrow while it runs; such hosts
+    /// use [`Self::resolve`] and invoke the returned action themselves.
     pub fn route(&self, chord: KeyChord, context: &KeyRoutingContext) -> AcceleratorOutcome {
+        let (outcome, action) = self.resolve(chord, context);
+        if let Some(action) = action {
+            action();
+        }
+        outcome
+    }
+
+    /// Resolves one chord to its outcome and the matched entry's action,
+    /// without invoking it.
+    ///
+    /// Splitting resolution from invocation lets a host release every borrow
+    /// of this router before the action runs: an action may open or close
+    /// windows, which registers and unregisters tables here.
+    pub fn resolve(
+        &self,
+        chord: KeyChord,
+        context: &KeyRoutingContext,
+    ) -> (AcceleratorOutcome, Option<ActivateHandler>) {
         let mut withheld = None;
         let key_window_table = context.key_window.as_ref().and_then(|key_window| {
             self.windows
@@ -302,11 +322,13 @@ impl AcceleratorRouter {
         if let Some((window, bindings)) = key_window_table {
             match bindings.find(chord, AcceleratorScope::Window, context.text_input_focused) {
                 Some(TableMatch::Applicable { id, action }) => {
-                    action();
-                    return AcceleratorOutcome::Dispatched {
-                        window,
-                        accelerator: id,
-                    };
+                    return (
+                        AcceleratorOutcome::Dispatched {
+                            window,
+                            accelerator: id,
+                        },
+                        Some(action),
+                    );
                 }
                 Some(TableMatch::Withheld { id }) => {
                     withheld = Some(AcceleratorOutcome::WithheldForTextInput {
@@ -324,11 +346,13 @@ impl AcceleratorRouter {
                 context.text_input_focused,
             ) {
                 Some(TableMatch::Applicable { id, action }) => {
-                    action();
-                    return AcceleratorOutcome::Dispatched {
-                        window: window.clone(),
-                        accelerator: id,
-                    };
+                    return (
+                        AcceleratorOutcome::Dispatched {
+                            window: window.clone(),
+                            accelerator: id,
+                        },
+                        Some(action),
+                    );
                 }
                 Some(TableMatch::Withheld { id }) if withheld.is_none() => {
                     withheld = Some(AcceleratorOutcome::WithheldForTextInput {
@@ -339,7 +363,7 @@ impl AcceleratorRouter {
                 Some(TableMatch::Withheld { .. }) | None => {}
             }
         }
-        withheld.unwrap_or(AcceleratorOutcome::Unmatched)
+        (withheld.unwrap_or(AcceleratorOutcome::Unmatched), None)
     }
 }
 

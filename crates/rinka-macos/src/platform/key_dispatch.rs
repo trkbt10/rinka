@@ -183,9 +183,26 @@ fn key_equivalent_text(key: KeyIdentity) -> String {
 }
 
 /// Applies a declared chord to a native menu item as its key equivalent.
+///
+/// AppKit encodes Shift for letter keys through the character case of the
+/// key equivalent, not through the modifier mask: a lowercase letter with
+/// `NSEventModifierFlagShift` in the mask is matched inconsistently — the
+/// installed menu bar honored the mask, but a view-hosted menu (a toolbar
+/// item's NSMenu) matched the same declaration with Shift ignored, so a
+/// `Primary+Shift+N` toolbar entry swallowed plain `Primary+N` whenever its
+/// window was key (found by the window-lifecycle probe,
+/// `reports/dynamic-window-management`). Letters therefore uppercase the
+/// equivalent and drop Shift from the mask — Apple's own convention — while
+/// keys without a case (digits, arrows, function keys) keep Shift in the
+/// mask, which AppKit honors uniformly for them.
 fn apply_menu_item_chord(menu_item: &AnyObject, chord: KeyChord) {
-    let key_equivalent = ns_string(&key_equivalent_text(chord.key));
-    let mask = native_modifier_flags(chord.modifiers);
+    let mut text = key_equivalent_text(chord.key);
+    let mut mask = native_modifier_flags(chord.modifiers);
+    if chord.modifiers.shift && chord.key.as_letter().is_some() {
+        text = text.to_ascii_uppercase();
+        mask &= !NS_EVENT_MODIFIER_SHIFT;
+    }
+    let key_equivalent = ns_string(&text);
     // SAFETY: The receiver is a retained NSMenuItem on the main thread and
     // both properties are public AppKit API.
     unsafe {
@@ -286,7 +303,13 @@ fn install_accelerator_monitor(
                 }
                 return event;
             }
-            let outcome = router.borrow().route(chord, &context);
+            // Resolution and invocation are split so the router borrow is
+            // released before the action runs: an action may open or close
+            // windows, which registers and unregisters tables on this router.
+            let (outcome, action) = router.borrow().resolve(chord, &context);
+            if let Some(action) = action {
+                action();
+            }
             if log_outcomes {
                 let outcome_text = match &outcome {
                     AcceleratorOutcome::Dispatched {

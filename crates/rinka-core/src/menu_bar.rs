@@ -664,31 +664,47 @@ impl MenuBarRouter {
     ///
     /// The handler is resolved from the live bindings, so a stale native menu
     /// dispatches through the freshest declaration, and a command the model
-    /// currently refuses is never dispatched.
+    /// currently refuses is never dispatched. A handler that must register
+    /// or unregister windows on this very router (opening or closing a
+    /// window) needs the caller to hold no outer borrow while it runs; such
+    /// hosts use [`Self::resolve_activation`] and invoke the returned
+    /// handler themselves.
     pub fn activate(&self, key_window: Option<&WindowId>, item_id: &str) -> MenuBarActivation {
-        let resolved = self.with_effective(key_window, |owner, model| {
-            if model.find_item(item_id).is_none() {
-                return (None, MenuBarActivation::Unknown);
-            }
-            match model.activation_handler(item_id) {
-                Some(handler) => (
-                    Some(handler),
-                    MenuBarActivation::Dispatched {
-                        owner: owner.cloned(),
-                    },
-                ),
-                None => (None, MenuBarActivation::Refused),
-            }
-        });
-        let Some((handler, outcome)) = resolved else {
-            return MenuBarActivation::Unknown;
-        };
+        let (outcome, handler) = self.resolve_activation(key_window, item_id);
         // The handler runs after every internal borrow is released, so it may
         // re-render and replace the declared model.
         if let Some(handler) = handler {
             handler();
         }
         outcome
+    }
+
+    /// Resolves one app-defined activation to its outcome and the handler to
+    /// run, without invoking it.
+    ///
+    /// Splitting resolution from invocation lets a host release every borrow
+    /// of this router before the handler runs: a handler may open or close
+    /// windows, which registers and unregisters bars here.
+    pub fn resolve_activation(
+        &self,
+        key_window: Option<&WindowId>,
+        item_id: &str,
+    ) -> (MenuBarActivation, Option<crate::ActivateHandler>) {
+        let resolved = self.with_effective(key_window, |owner, model| {
+            if model.find_item(item_id).is_none() {
+                return (MenuBarActivation::Unknown, None);
+            }
+            match model.activation_handler(item_id) {
+                Some(handler) => (
+                    MenuBarActivation::Dispatched {
+                        owner: owner.cloned(),
+                    },
+                    Some(handler),
+                ),
+                None => (MenuBarActivation::Refused, None),
+            }
+        });
+        resolved.unwrap_or((MenuBarActivation::Unknown, None))
     }
 }
 
