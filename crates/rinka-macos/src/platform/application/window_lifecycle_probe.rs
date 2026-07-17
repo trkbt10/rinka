@@ -299,6 +299,9 @@ impl ApplicationDelegate {
                 eprintln!(
                     "Rinka window-lifecycle probe step=editor_scene title={title:?} pass=true"
                 );
+                // Photograph both windows while the runtime-opened secondary
+                // is alive: its own content, toolbar, and retitled chrome.
+                self.capture_windows_to_directory("window-lifecycle-open-");
                 // Programmatic close from a component message: Primary+Alt+W
                 // dispatches CloseThisWindow in the key window, which closes
                 // unconditionally — no sheet, even in the editor scene.
