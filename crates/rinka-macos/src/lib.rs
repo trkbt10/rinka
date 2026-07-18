@@ -11,7 +11,8 @@ pub use platform::run;
 
 #[cfg(target_os = "macos")]
 pub use platform::{
-    AppKitError, AppKitHandle, AppKitTestHost, SettleObservation, window_server_session_available,
+    AppKitError, AppKitHandle, AppKitTestHost, RealizedControl, SettleObservation,
+    realized_control, window_server_session_available,
 };
 
 #[cfg(not(target_os = "macos"))]

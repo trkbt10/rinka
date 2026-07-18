@@ -1,9 +1,10 @@
 //! Consumer-level reconciliation and runtime contracts.
 
 use rinka_core::{
-    AppRuntime, CollectionPattern, Component, Dispatch, Element, ListRowRole, PlatformServices,
-    Props, Renderer, SortDirection, Spacing, TableColumn, TableSort, UiPattern, UpdateContext,
-    WindowContent, WindowRuntime, button, column, label, list, list_row, mount_pattern,
+    AppRuntime, CollectionPattern, Component, Dispatch, Element, InputKind, ListRowRole,
+    PlatformServices, Props, Renderer, SortDirection, Spacing, TableColumn, TableSort, UiPattern,
+    UpdateContext, WindowContent, WindowRuntime, button, column, input, label, list, list_row,
+    mount_pattern,
 };
 use rinka_headless::{HeadlessBackend, Operation};
 use std::cell::Cell;
@@ -301,6 +302,58 @@ fn changing_between_table_and_non_outline_lists_replaces_the_native_container() 
         .unwrap();
     assert_eq!(stats.replaced, 1);
     assert_ne!(renderer.backend().find_by_key("files"), Some(table));
+}
+
+#[test]
+fn changing_input_kind_replaces_the_native_control() {
+    // A control's native class is fixed at creation, so switching InputKind to
+    // one of a different class (here Text -> Secure, i.e. plaintext -> concealed)
+    // must replace the native object rather than patch it in place.
+    let mut renderer = Renderer::new(HeadlessBackend::new());
+    renderer
+        .render(
+            input("secret", "Password", InputKind::Text, "Password", |_| {}).with_key("password"),
+        )
+        .unwrap();
+    let plaintext_handle = renderer.backend().find_by_key("password").unwrap();
+    renderer.backend_mut().clear_operations();
+
+    let stats = renderer
+        .render(
+            input("secret", "Password", InputKind::Secure, "Password", |_| {}).with_key("password"),
+        )
+        .unwrap();
+
+    assert_eq!(stats.replaced, 1);
+    assert_eq!(stats.patched, 0);
+    assert_ne!(
+        renderer.backend().find_by_key("password"),
+        Some(plaintext_handle)
+    );
+}
+
+#[test]
+fn editing_a_secure_input_value_patches_the_same_native_control() {
+    // A same-kind value edit keeps the concealed control's native identity: it
+    // is patched in place, not replaced, so the class change is scoped to an
+    // actual kind change and not triggered on every keystroke.
+    let mut renderer = Renderer::new(HeadlessBackend::new());
+    renderer
+        .render(input("", "Password", InputKind::Secure, "Password", |_| {}).with_key("password"))
+        .unwrap();
+    let before = renderer.backend().find_by_key("password").unwrap();
+    renderer.backend_mut().clear_operations();
+
+    let stats = renderer
+        .render(
+            input("hunter2", "Password", InputKind::Secure, "Password", |_| {})
+                .with_key("password"),
+        )
+        .unwrap();
+
+    assert_eq!(stats.patched, 1);
+    assert_eq!(stats.replaced, 0);
+    assert_eq!(renderer.backend().find_by_key("password"), Some(before));
 }
 
 #[test]

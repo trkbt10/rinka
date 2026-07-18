@@ -334,6 +334,57 @@ impl NativeBackend for AppKitBackend {
     }
 }
 
+/// Facts about a native control realized for a headless gate assertion.
+///
+/// The AppKit adapter picks a concrete control class per semantic element;
+/// this captures that choice and the control's value so a gate can assert,
+/// without a window-server session, that (for example) `InputKind::Secure`
+/// realizes as `NSSecureTextField` and that its controlled value round-trips
+/// through the native control.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RealizedControl {
+    /// Objective-C class name of the control's backing view.
+    pub class_name: String,
+    /// The control's `stringValue`, when it exposes one; `None` otherwise.
+    pub string_value: Option<String>,
+}
+
+/// Realizes the native control the AppKit adapter chooses for one leaf
+/// semantic `element` on the process main thread and reports its class and
+/// value, mounting no window and requiring no window-server session.
+///
+/// Fails with [`AppKitError`] when called off the main thread, where AppKit
+/// forbids control creation.
+pub fn realized_control(element: &Element) -> Result<RealizedControl, AppKitError> {
+    let mtm = MainThreadMarker::new().ok_or_else(|| {
+        AppKitError("realized_control must run on the process main thread".to_owned())
+    })?;
+    let handle = create_element(mtm, element, EventBindings::input(Rc::new(|_: String| {})))?;
+    // SAFETY: `-[NSObject class]` returns the receiver's public class. Unlike
+    // object_getClass (what `AnyObject::class` reports), it hides the KVO
+    // isa-swizzling AppKit installs on some controls (for example
+    // NSSearchField becomes NSKVONotifying_NSSearchField), so the name is the
+    // control class the adapter actually chose.
+    let class_name = unsafe {
+        let class: *const objc2::runtime::AnyClass = msg_send![handle.view(), class];
+        (*class).name().to_string_lossy().into_owned()
+    };
+    // SAFETY: A control that responds to `stringValue` returns an autoreleased
+    // NSString with its current text; it is read on the main thread on the
+    // freshly created control.
+    let string_value = unsafe {
+        let responds: bool = msg_send![handle.view(), respondsToSelector: sel!(stringValue)];
+        responds.then(|| {
+            let value: *mut AnyObject = msg_send![handle.view(), stringValue];
+            rust_string(value)
+        })
+    };
+    Ok(RealizedControl {
+        class_name,
+        string_value,
+    })
+}
+
 fn create_element(
     mtm: MainThreadMarker,
     element: &Element,
@@ -409,7 +460,11 @@ fn create_element(
             let target = ActionTarget::new(mtm, events, TargetKind::Input);
             let class = match kind {
                 InputKind::Search => objc2::class!(NSSearchField),
-                InputKind::Text | InputKind::Secure => objc2::class!(NSTextField),
+                InputKind::Text => objc2::class!(NSTextField),
+                // NSSecureTextField subclasses NSTextField and conceals its
+                // characters through a secure field editor; it shares the value,
+                // placeholder, enabled, and target/action surface used below.
+                InputKind::Secure => objc2::class!(NSSecureTextField),
             };
             // SAFETY: initWithFrame is the designated view initializer.
             let view = unsafe {
@@ -424,7 +479,9 @@ fn create_element(
                 SET_ACCESSIBILITY_LABEL,
                 accessibility_label,
             );
-            // SAFETY: NSTextField target/action and enabled setters accept these values.
+            // SAFETY: The field is an NSTextField or one of its subclasses
+            // (NSSearchField, NSSecureTextField); each inherits the NSControl
+            // target/action and enabled setters applied here.
             unsafe {
                 let _: () = msg_send![view.as_object(), setTarget: &*target];
                 let _: () = msg_send![view.as_object(), setAction: sel!(performAction:)];

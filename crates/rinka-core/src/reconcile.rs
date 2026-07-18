@@ -330,6 +330,10 @@ fn compatible(old: &Element, new: &Element) -> bool {
                 ..
             },
         ) => list_native_class(*old_pattern) == list_native_class(*new_pattern),
+        (
+            crate::Props::Input { kind: old_kind, .. },
+            crate::Props::Input { kind: new_kind, .. },
+        ) => input_native_class(*old_kind) == input_native_class(*new_kind),
         _ => true,
     }
 }
@@ -341,6 +345,20 @@ fn list_native_class(pattern: crate::CollectionPattern) -> u8 {
         1
     } else {
         2
+    }
+}
+
+// Each input variant maps to a distinct native control class on every
+// adapter (AppKit NSTextField / NSSearchField / NSSecureTextField, GTK
+// Entry / SearchEntry / PasswordEntry, WinUI TextBox / AutoSuggestBox /
+// PasswordBox). A patch cannot change a mounted control's class, so a change
+// of variant must replace the native object rather than reuse it — otherwise
+// a field declared `Secure` after mount would keep a plaintext control.
+fn input_native_class(kind: crate::InputKind) -> u8 {
+    match kind {
+        crate::InputKind::Text => 0,
+        crate::InputKind::Search => 1,
+        crate::InputKind::Secure => 2,
     }
 }
 

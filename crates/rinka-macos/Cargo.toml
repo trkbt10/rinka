@@ -18,5 +18,15 @@ block2 = "0.6.2"
 objc2 = { version = "0.6.4", features = ["exception"] }
 objc2-foundation = "0.3.2"
 
+[dev-dependencies]
+rinka-core = { path = "../rinka-core" }
+
+# The secure-input class assertion realizes a real AppKit control, which must
+# happen on the process main thread, so it runs without the libtest harness.
+# It mounts no window; a non-macOS build logs a typed skip and exits 0.
+[[test]]
+name = "secure_input"
+harness = false
+
 [lints]
 workspace = true
